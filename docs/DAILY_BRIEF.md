@@ -162,22 +162,14 @@ The API update may happen immediately or remain queued until Wi-Fi is available.
 
 ## Bible
 
-Bible text and Bible notes are stored locally on the SD card and are not
-downloaded from the verse API.
+The verse of the day is supplied by the `/verse` API. Use the returned
+`verse.text` directly for the daily verse text, `verse.reference` for its
+reference, and `verse.translation` for the displayed translation. Cache the
+validated API response so the verse of the day remains available offline.
 
-The `/verse` API only identifies the verse of the day as JSON:
-
-```json
-{
-  "version": "TPT",
-  "book": "Psalms",
-  "chapter": 118,
-  "verse": 24,
-  "reference": "Psalm 118:24"
-}
-```
-
-The displayed verse text is resolved from the local Bible files.
+The verse of the day must not depend on a matching local Bible version or
+chapter file. Local Bible text and notes on the SD card are used only by the
+Bible reader for browsing books and chapters.
 
 ### Bible home
 
@@ -185,7 +177,7 @@ Approximately 70% of the screen displays:
 
 - Verse of the day
 - Verse reference
-- Active Bible version
+- Translation returned by the verse API
 
 The lower part of the screen contains a Bible-book selector.
 
@@ -281,18 +273,41 @@ Do not bundle copyrighted Bible text in the public repository unless redistribut
 
 ```json
 {
-  "schemaVersion": 1,
-  "date": "2026-08-01",
-  "generatedAt": "2026-08-01T06:00:00+02:00",
-  "verseOfDay": {
-    "version": "TPT",
-    "book": "Psalms",
-    "chapter": 118,
-    "verse": 24,
-    "reference": "Psalm 118:24"
+  "success": true,
+  "date": "2026-08-02",
+  "verse": {
+    "id": 1,
+    "reference": "Genèse 2:5",
+    "translation": {
+      "abbreviation": "S21",
+      "name": "La Bible Segond 21",
+      "language": "fr"
+    },
+    "text": "5 Lorsque l'Eternel Dieu fit la terre et le ciel, il n'y avait encore aucun arbuste des champs sur la terre et aucune herbe des champs ne poussait encore, car l'Eternel Dieu n'avait pas fait pleuvoir sur la terre et il n'y avait pas d'homme pour cultiver le sol.",
+    "memorisation": {
+      "level": 1,
+      "scale": 3
+    },
+    "notes": {
+      "personal": null,
+      "source": [
+        {
+          "text": "2.5 L'Eternel Dieu: dans cette version, l'Eternel traduit le tétragramme Yhvh que les Juifs, par respect, ont depuis longtemps cessé de prononcer. Ce tétragramme est à rapprocher de la racine hébraïque du verbe être (voir aussi Exode 3.14-15). Dieu traduit le plus souvent l'hébreu 'elohim (comme ici) ou 'el.",
+          "verse": "5"
+        }
+      ]
+    }
   }
 }
 ```
+
+A valid daily verse response requires `success` to be `true` and must contain
+`date`, `verse.reference`, `verse.translation.abbreviation`,
+`verse.translation.name`, `verse.translation.language`, and non-empty
+`verse.text`. The Daily screens display the cached `verse.text` without
+resolving or replacing it from local Bible files. Memorisation data and notes
+may be cached with the response but are not required for the initial Daily
+screens.
 
 `/calendar` JSON structure:
 
@@ -363,11 +378,11 @@ Do not bundle copyrighted Bible text in the public repository unless redistribut
 ```
 
 The calendar `range` must cover the next five months according to the
-server's local date. Reject unsupported schema versions or an insufficient
-range, and retain the previous valid cache for that API. Reject focus rules
-that reference unknown calendar IDs. Verse, calendar, and focus caches are
-independent: failure of one request must not discard valid caches from the
-others.
+server's local date. Reject unsupported calendar or focus schema versions or
+an insufficient calendar range, and retain the previous valid cache for that
+API. Reject focus rules that reference unknown calendar IDs. Verse, calendar,
+and focus caches are independent: failure of one request must not discard
+valid caches from the others.
 
 ## Power-off screen
 
@@ -386,9 +401,9 @@ Group these items by calendar and apply the currently matching `/focus`
 rule before rendering them. Use cached data only. Do not delay shutdown while
 waiting for a network request.
 
-If no valid daily cache or local verse text exists, render a white screen with
-this text centered on the display instead of the normal CrossPoint sleep
-screen:
+If no valid cached daily verse response with non-empty `verse.text` exists,
+render a white screen with this text centered on the display instead of the
+normal CrossPoint sleep screen:
 
 ```text
 edwin@allan.ch
@@ -399,14 +414,17 @@ The normal sleep-screen renderer must not overwrite the Daily Visualizer after i
 
 ## Development order
 
-1. Add static Calendar and Bible screens in the simulator.
-2. Add homepage buttons and navigation.
-3. Add local Bible fixture files.
-4. Add JSON fixture loading.
-5. Add Settings → Daily.
-6. Add background startup refresh.
-7. Add calendar task updates and offline queueing.
-8. Add the Daily Visualizer sleep screen.
-9. Validate the complete feature on the physical Xteink X3.
-
-Scheduled automatic wake is not part of this feature.
+1. Add the homepage buttons and screen navigation.
+2. Build the Bible reader using the Bible files already on the SD card.
+3. Add the verse cache.
+4. Build the Bible home screen.
+5. Build the Calendar views using local JSON fixtures.
+6. Add focus filtering.
+7. Add Calendar unlocking.
+8. Add Daily settings.
+9. Add API loading and caching.
+10. Add startup refresh.
+11. Add calendar task updates and offline queueing.
+12. Add the Daily Visualizer power-off screen.
+13. Validate the complete feature in the simulator.
+14. Validate the complete feature on the physical Xteink X3.
