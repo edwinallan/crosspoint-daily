@@ -13,10 +13,11 @@ CrossPoint must remain fully usable as an e-reader.
 
 When the device starts:
 
-1. Load the last cached daily JSON immediately.
+1. Load the last cached verse and calendar JSON immediately.
 2. Display the normal homepage without waiting for the network.
-3. If Wi-Fi is configured, fetch updated data in a background task.
-4. Validate and cache the new response.
+3. If Wi-Fi is configured, fetch updated data in a background task, first from
+   `verse.json` and then from `calendar.json`.
+4. Validate and cache each response independently.
 5. Refresh any visible Daily screen when the fetch completes.
 6. Keep the previous cache when the request fails.
 
@@ -27,7 +28,7 @@ This is a startup refresh, not continuous background synchronization.
 Default base URL:
 
 ```text
-https://example.com/crosspoint-daily
+https://my-daily.allan.ch/
 ```
 
 The default must exist as a clearly named constant in code.
@@ -35,19 +36,34 @@ The default must exist as a clearly named constant in code.
 Add a **Daily** section to CrossPoint Settings containing:
 
 - Server URL
+- Auth username and password
 - Refresh on startup toggle
 - Manual refresh action
 - Last successful refresh time
 - Connection or refresh status
+- Calendar unlock combination setup: record a four-button combination using
+  logical device buttons, in order
 
 The saved Settings value overrides the compiled default.
 
 Endpoints:
 
 ```text
-GET  {baseUrl}/daily.json
+GET  {baseUrl}/verse.json
+GET  {baseUrl}/calendar.json
 POST {baseUrl}/tasks/{taskId}
 ```
+
+Use Basic Auth for both GET requests and task updates. The two GET requests
+are independent: `verse.json` returns only the current daily Bible verse,
+while `calendar.json` returns the complete calendar and task JSON for the next
+five months, not only today's events.
+
+Opening Calendar requires entering the recorded four-button combination. Ask
+for it at most once per local calendar day; after a successful entry, Calendar
+remains unlocked until the next local calendar day. Failed entries do not
+unlock it. Store the combination in the existing Settings mechanism and never
+write it to logs or include it in network requests.
 
 Task update body:
 
@@ -70,7 +86,8 @@ Add these buttons immediately before **Browse Files**:
 
 ## Calendar
 
-Calendar data comes from `daily.json`.
+Calendar data comes from `calendar.json` and includes the full five-month range
+returned by the endpoint. Cache the validated payload for offline use.
 
 It supports two views:
 
@@ -120,9 +137,10 @@ The API update may happen immediately or remain queued until Wi-Fi is available.
 
 ## Bible
 
-Bible text is stored locally on the SD card and is not downloaded in `daily.json`.
+Bible text and Bible notes are stored locally on the SD card and are not
+downloaded from the verse API.
 
-The Daily JSON only identifies the verse of the day:
+The verse API only identifies the verse of the day:
 
 ```json
 {
@@ -182,6 +200,8 @@ Suggested layout:
     PSA/
       001.txt
       002.txt
+    REV/
+      020.notes.json
   LS21/
     manifest.json
     GEN/
@@ -215,11 +235,24 @@ The manifest contains:
 - Book order
 - Chapter counts
 
+Optional chapter notes are stored beside the chapter text using this file
+pattern:
+
+```text
+<BOOK>/<CHAPTER>.notes.json
+```
+
+For example, `REV/020.notes.json` contains `book_id`, `chapter`, and a
+`notes` array. Each note's `verse` field links it to a verse and its `text`
+field contains the note text. When notes exist for a verse, the Bible reader
+must make them available with that verse. Missing or malformed notes files are
+treated as having no notes and must not prevent chapter text from loading.
+
 Do not bundle copyrighted Bible text in the public repository unless redistribution is permitted. Bible content will be supplied separately.
 
-## Daily JSON
+## Verse and calendar JSON
 
-Proposed structure:
+`verse.json` structure:
 
 ```json
 {
@@ -232,13 +265,28 @@ Proposed structure:
     "chapter": 118,
     "verse": 24,
     "reference": "Psalm 118:24"
-  },
+  }
+}
+```
+
+`calendar.json` structure:
+
+```json
+{
+  "schemaVersion": 1,
+  "date": "2026-08-01",
+  "generatedAt": "2026-08-01T06:00:00+02:00",
+  "range": { "from": "2026-08-01", "to": "2026-12-31" },
   "events": [],
   "tasks": []
 }
 ```
 
-Reject unsupported schema versions and retain the previous valid cache.
+The calendar `range` must cover the next five months according to the
+server's local date. Reject unsupported schema versions or an insufficient
+range, and retain the previous valid cache for that API. Verse and calendar
+caches are independent: failure of one request must not discard a valid cache
+from the other.
 
 ## Power-off screen
 
@@ -255,7 +303,14 @@ The retained image must contain:
 
 Use cached data only. Do not delay shutdown while waiting for a network request.
 
-If no valid daily cache or local verse text exists, fall back to the normal CrossPoint sleep screen.
+If no valid daily cache or local verse text exists, render a white screen with
+this text centered on the display instead of the normal CrossPoint sleep
+screen:
+
+```text
+edwin@allan.ch
++41795846697
+```
 
 The normal sleep-screen renderer must not overwrite the Daily Visualizer after it has been drawn.
 
