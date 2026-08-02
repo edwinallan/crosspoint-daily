@@ -13,10 +13,10 @@ CrossPoint must remain fully usable as an e-reader.
 
 When the device starts:
 
-1. Load the last cached verse and calendar JSON immediately.
+1. Load the last cached verse, calendar, and focus JSON immediately.
 2. Display the normal homepage without waiting for the network.
 3. If Wi-Fi is configured, fetch updated data in a background task, first from
-   `verse.json` and then from `calendar.json`.
+   `/verse`, then `/calendar`, and then `/focus`.
 4. Validate and cache each response independently.
 5. Refresh any visible Daily screen when the fetch completes.
 6. Keep the previous cache when the request fails.
@@ -28,7 +28,7 @@ This is a startup refresh, not continuous background synchronization.
 Default base URL:
 
 ```text
-https://my-daily.allan.ch/
+https://my-daily.allan.ch/api/
 ```
 
 The default must exist as a clearly named constant in code.
@@ -39,6 +39,7 @@ Add a **Daily** section to CrossPoint Settings containing:
 - Auth username and password
 - Refresh on startup toggle
 - Manual refresh action
+- Reload all Daily API endpoints action
 - Last successful refresh time
 - Connection or refresh status
 - Calendar unlock combination setup: record a four-button combination using
@@ -49,15 +50,17 @@ The saved Settings value overrides the compiled default.
 Endpoints:
 
 ```text
-GET  {baseUrl}/verse.json
-GET  {baseUrl}/calendar.json
+GET  {baseUrl}/verse
+GET  {baseUrl}/calendar
+GET  {baseUrl}/focus
 POST {baseUrl}/tasks/{taskId}
 ```
 
 Use Basic Auth for both GET requests and task updates. The two GET requests
-are independent: `verse.json` returns only the current daily Bible verse,
-while `calendar.json` returns the complete calendar and task JSON for the next
-five months, not only today's events.
+are independent: `/verse` returns only the current daily Bible verse as JSON,
+while `/calendar` returns the complete calendar and task JSON for the next
+five months, not only today's events, and `/focus` returns the timetable that
+controls which calendars are visible at each time.
 
 Opening Calendar requires entering the recorded four-button combination. Ask
 for it at most once per local calendar day; after a successful entry, Calendar
@@ -86,8 +89,27 @@ Add these buttons immediately before **Browse Files**:
 
 ## Calendar
 
-Calendar data comes from `calendar.json` and includes the full five-month range
-returned by the endpoint. Cache the validated payload for offline use.
+Calendar data comes from `/calendar` and includes the full five-month range
+returned by the endpoint. A payload may contain multiple named calendars,
+such as `work` and `private`; events and tasks belong to exactly one calendar.
+Cache the validated payload for offline use.
+
+The Calendar and Daily Visualizer views must group or sort today's items by
+calendar and show the calendar name for each group.
+
+### Focus timetable
+
+Focus data comes from `/focus`. It defines time windows that select which
+calendar IDs are visible; tasks are included because they belong to calendars.
+Rules may be limited to particular weekdays and may cross midnight. When
+multiple rules match, the most specific matching rule wins; otherwise all
+calendars are visible. An empty selected-calendar list hides calendar items
+and tasks for that time window.
+
+On every load of Calendar or the Daily Visualizer, evaluate the cached focus
+timetable against the current local date and time. Do not continuously reload
+the API while a screen is open. A successful refresh of `/focus` takes effect
+on the next screen load.
 
 It supports two views:
 
@@ -131,6 +153,9 @@ Tasks may contain:
 - Location
 - Tags
 
+Every event and task must include a `calendarId` identifying one of the named
+calendars in the payload.
+
 Selecting a task toggles its completed state immediately on-screen.
 
 The API update may happen immediately or remain queued until Wi-Fi is available.
@@ -140,7 +165,7 @@ The API update may happen immediately or remain queued until Wi-Fi is available.
 Bible text and Bible notes are stored locally on the SD card and are not
 downloaded from the verse API.
 
-The verse API only identifies the verse of the day:
+The `/verse` API only identifies the verse of the day as JSON:
 
 ```json
 {
@@ -252,7 +277,7 @@ Do not bundle copyrighted Bible text in the public repository unless redistribut
 
 ## Verse and calendar JSON
 
-`verse.json` structure:
+`/verse` JSON structure:
 
 ```json
 {
@@ -269,7 +294,7 @@ Do not bundle copyrighted Bible text in the public repository unless redistribut
 }
 ```
 
-`calendar.json` structure:
+`/calendar` JSON structure:
 
 ```json
 {
@@ -277,16 +302,72 @@ Do not bundle copyrighted Bible text in the public repository unless redistribut
   "date": "2026-08-01",
   "generatedAt": "2026-08-01T06:00:00+02:00",
   "range": { "from": "2026-08-01", "to": "2026-12-31" },
-  "events": [],
-  "tasks": []
+  "calendars": [
+    {
+      "id": "work",
+      "name": "Work",
+      "events": [
+        {
+          "id": "work-101",
+          "calendarId": "work",
+          "title": "Project review",
+          "date": "2026-08-03",
+          "startTime": "09:00",
+          "endTime": "10:00",
+          "allDay": false
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "private",
+      "name": "Private",
+      "events": [],
+      "tasks": [
+        {
+          "id": "private-201",
+          "calendarId": "private",
+          "title": "Buy groceries",
+          "date": "2026-08-03",
+          "completed": false
+        }
+      ]
+    }
+  ]
+}
+```
+
+`/focus` JSON structure:
+
+```json
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-01T06:00:00+02:00",
+  "rules": [
+    {
+      "id": "monday-morning",
+      "weekdays": ["monday"],
+      "from": "08:00",
+      "to": "12:00",
+      "calendarIds": ["mystik", "holidays"]
+    },
+    {
+      "id": "default",
+      "weekdays": ["*"],
+      "from": "00:00",
+      "to": "24:00",
+      "calendarIds": ["work", "private", "mystik", "holidays"]
+    }
+  ]
 }
 ```
 
 The calendar `range` must cover the next five months according to the
 server's local date. Reject unsupported schema versions or an insufficient
-range, and retain the previous valid cache for that API. Verse and calendar
-caches are independent: failure of one request must not discard a valid cache
-from the other.
+range, and retain the previous valid cache for that API. Reject focus rules
+that reference unknown calendar IDs. Verse, calendar, and focus caches are
+independent: failure of one request must not discard valid caches from the
+others.
 
 ## Power-off screen
 
@@ -301,7 +382,9 @@ The retained image must contain:
 - Today’s timed events
 - Today’s incomplete tasks
 
-Use cached data only. Do not delay shutdown while waiting for a network request.
+Group these items by calendar and apply the currently matching `/focus`
+rule before rendering them. Use cached data only. Do not delay shutdown while
+waiting for a network request.
 
 If no valid daily cache or local verse text exists, render a white screen with
 this text centered on the display instead of the normal CrossPoint sleep
