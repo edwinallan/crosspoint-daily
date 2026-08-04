@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "date": "2026-08-03",
+  "verse": {
+    "id": 1,
+    "reference": "Psalm 119:105",
+    "translation": {
+      "abbreviation": "WEB",
+      "name": "World English Bible",
+      "language": "en"
+    },
+    "text": "Your word is a lamp to my feet, and a light for my path."
+  }
+}
