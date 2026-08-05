@@ -7,9 +7,9 @@
 
 namespace bible {
 
-inline constexpr char BIBLE_ROOT[] = "/bibles";
+inline constexpr char BIBLE_ROOT[] = "/.bibles";
 inline constexpr char DAILY_VERSE_CACHE_PATH[] = "/.crosspoint/daily/verse.json";
-inline constexpr char DAILY_VERSE_FIXTURE_PATH[] = "/bibles/verse.json";
+inline constexpr char DAILY_VERSE_FIXTURE_PATH[] = "/.bibles/verse.json";
 
 inline constexpr size_t MAX_VERSION_COUNT = 12;
 inline constexpr size_t MAX_BOOK_COUNT = 80;
