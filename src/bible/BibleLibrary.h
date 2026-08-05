@@ -16,6 +16,7 @@ inline constexpr size_t MAX_BOOK_COUNT = 80;
 inline constexpr size_t MAX_CHAPTER_COUNT = 200;
 inline constexpr size_t MAX_PAGE_COUNT = 512;
 inline constexpr size_t MAX_CHAPTER_NOTE_COUNT = 200;
+inline constexpr char VERSE_NUMBER_END = '\x1d';
 inline constexpr char NOTE_MARKER_START = '\x1e';
 inline constexpr char NOTE_MARKER_END = '\x1f';
 

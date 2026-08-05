@@ -721,8 +721,28 @@ bool BibleActivity::nextVisualLine(const size_t offset, VisualLine& line) {
 int BibleActivity::measureVisualText(char* text) {
   if (!text) return 0;
   int width = 0;
+
+  char* verseSeparator = strchr(text, bible::VERSE_NUMBER_END);
+  char savedVerseSeparator = '\0';
+  char* verseNumberEnd = nullptr;
+  if (verseSeparator) {
+    savedVerseSeparator = *verseSeparator;
+    *verseSeparator = ' ';
+    verseNumberEnd = text;
+    while (*verseNumberEnd >= '0' && *verseNumberEnd <= '9') ++verseNumberEnd;
+    if (verseNumberEnd == text) verseNumberEnd = nullptr;
+  }
+
   char* segment = text;
   char* cursor = text;
+  if (verseNumberEnd) {
+    const char savedEnd = *verseNumberEnd;
+    *verseNumberEnd = '\0';
+    width += renderer.getTextAdvanceX(readerFontId, text, EpdFontFamily::BOLD);
+    *verseNumberEnd = savedEnd;
+    segment = verseNumberEnd;
+    cursor = verseNumberEnd;
+  }
   while (*cursor) {
     if (*cursor != bible::NOTE_MARKER_START) {
       ++cursor;
@@ -748,13 +768,35 @@ int BibleActivity::measureVisualText(char* text) {
     segment = cursor;
   }
   width += renderer.getTextAdvanceX(readerFontId, segment, EpdFontFamily::REGULAR);
+  if (verseSeparator) *verseSeparator = savedVerseSeparator;
   return width;
 }
 
 void BibleActivity::drawVisualText(int x, const int y, char* text) {
   if (!text) return;
+
+  char* verseSeparator = strchr(text, bible::VERSE_NUMBER_END);
+  char savedVerseSeparator = '\0';
+  char* verseNumberEnd = nullptr;
+  if (verseSeparator) {
+    savedVerseSeparator = *verseSeparator;
+    *verseSeparator = ' ';
+    verseNumberEnd = text;
+    while (*verseNumberEnd >= '0' && *verseNumberEnd <= '9') ++verseNumberEnd;
+    if (verseNumberEnd == text) verseNumberEnd = nullptr;
+  }
+
   char* segment = text;
   char* cursor = text;
+  if (verseNumberEnd) {
+    const char savedEnd = *verseNumberEnd;
+    *verseNumberEnd = '\0';
+    renderer.drawText(readerFontId, x, y, text, true, EpdFontFamily::BOLD);
+    x += renderer.getTextAdvanceX(readerFontId, text, EpdFontFamily::BOLD);
+    *verseNumberEnd = savedEnd;
+    segment = verseNumberEnd;
+    cursor = verseNumberEnd;
+  }
   while (*cursor) {
     if (*cursor != bible::NOTE_MARKER_START) {
       ++cursor;
@@ -788,6 +830,7 @@ void BibleActivity::drawVisualText(int x, const int y, char* text) {
     segment = cursor;
   }
   renderer.drawText(readerFontId, x, y, segment);
+  if (verseSeparator) *verseSeparator = savedVerseSeparator;
 }
 
 void BibleActivity::buildPageIndex() {
@@ -814,6 +857,7 @@ void BibleActivity::buildPageIndex() {
 
   if (renderer.isSdCardFont(readerFontId)) {
     renderer.ensureSdCardFontReady(readerFontId, chapterText.get(), /*styleMask=*/0x01);
+    renderer.ensureSdCardFontReady(readerFontId, "0123456789", /*styleMask=*/0x02);
   }
 
   pageOffsets.push_back(0);

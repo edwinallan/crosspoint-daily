@@ -146,7 +146,8 @@ bool findVerseMarkerOffset(const char* buffer, const size_t length, const uint16
   while (lineStart < length) {
     char* end = nullptr;
     const long number = strtol(buffer + lineStart, &end, 10);
-    if (end != buffer + lineStart && number == verse && (*end == ' ' || *end == NOTE_MARKER_START)) {
+    if (end != buffer + lineStart && number == verse &&
+        (*end == VERSE_NUMBER_END || *end == NOTE_MARKER_START)) {
       offset = static_cast<size_t>(end - buffer);
       while (offset < length && buffer[offset] == NOTE_MARKER_START) {
         while (offset < length && buffer[offset] != NOTE_MARKER_END) ++offset;
@@ -424,13 +425,13 @@ bool BibleLibrary::loadChapter(const VersionInfo& version, const BookInfo& book,
     return false;
   }
 
-  // Normalize CRLF and turn the manifest's TAB separator into a printable
-  // space without allocating a second copy of the chapter.
+  // Normalize CRLF and retain the manifest's TAB separator as an internal
+  // marker so the reader can style verse numbers without a second copy.
   size_t normalizedLength = 0;
   for (size_t i = 0; i < chapterSize; ++i) {
     char value = chapterText[i];
     if (value == '\r') continue;
-    if (value == '\t') value = ' ';
+    if (value == '\t') value = VERSE_NUMBER_END;
     chapterText[normalizedLength++] = value;
   }
   chapterText[normalizedLength] = '\0';
