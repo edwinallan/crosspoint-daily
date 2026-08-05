@@ -367,30 +367,80 @@ void BibleActivity::changeChapterBook(const int direction) {
 
 void BibleActivity::handleReaderInput() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    if (readerNoteMode == ReaderNoteMode::Popup) {
+      readerNoteMode = ReaderNoteMode::Selecting;
+      requestUpdate();
+      return;
+    }
+    if (readerNoteMode == ReaderNoteMode::Selecting) {
+      readerNoteMode = ReaderNoteMode::Reading;
+      requestUpdate();
+      return;
+    }
     enterChapters();
     return;
   }
+
+  if (readerNoteMode == ReaderNoteMode::Reading && chapterNoteCount > 0 && !readerConfirmLongHandled &&
+      mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
+      mappedInput.getHeldTime() > NOTE_SELECT_LONG_PRESS_MS) {
+    readerConfirmLongHandled = true;
+    activateNoteSelection();
+    return;
+  }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (readerConfirmLongHandled) {
+      readerConfirmLongHandled = false;
+      return;
+    }
+    if (readerNoteMode == ReaderNoteMode::Reading && chapterNoteCount > 0 &&
+        mappedInput.getHeldTime() > NOTE_SELECT_LONG_PRESS_MS) {
+      activateNoteSelection();
+      return;
+    }
+    if (readerNoteMode == ReaderNoteMode::Popup) {
+      readerNoteMode = ReaderNoteMode::Selecting;
+      requestUpdate();
+      return;
+    }
+    if (readerNoteMode == ReaderNoteMode::Selecting) {
+      readerNoteMode = ReaderNoteMode::Popup;
+      requestUpdate();
+      return;
+    }
     switchVersion(1);
     return;
   }
 
   const bool swapFront = mappedInput.isNavDirectionSwapped();
-  const auto previousChapterButton =
+  const auto previousFrontButton =
       swapFront ? MappedInputManager::Button::Right : MappedInputManager::Button::Left;
-  const auto nextChapterButton = swapFront ? MappedInputManager::Button::Left : MappedInputManager::Button::Right;
-  if (mappedInput.wasReleased(previousChapterButton)) {
+  const auto nextFrontButton = swapFront ? MappedInputManager::Button::Left : MappedInputManager::Button::Right;
+
+  if (readerNoteMode == ReaderNoteMode::Selecting) {
+    if (mappedInput.wasReleased(previousFrontButton) ||
+        mappedInput.wasReleased(MappedInputManager::Button::PageBack)) {
+      moveSelectedNote(-1);
+    } else if (mappedInput.wasReleased(nextFrontButton) ||
+               mappedInput.wasReleased(MappedInputManager::Button::PageForward)) {
+      moveSelectedNote(1);
+    }
+    return;
+  }
+  if (readerNoteMode == ReaderNoteMode::Popup) return;
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::PageBack)) {
     changeReaderChapter(-1);
     return;
   }
-  if (mappedInput.wasReleased(nextChapterButton)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::PageForward)) {
     changeReaderChapter(1);
     return;
   }
 
   const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
-  const bool previousPage = mappedInput.wasReleased(MappedInputManager::Button::PageBack) || touch.prev;
-  const bool nextPage = mappedInput.wasReleased(MappedInputManager::Button::PageForward) || touch.next;
+  const bool previousPage = mappedInput.wasReleased(previousFrontButton) || touch.prev;
+  const bool nextPage = mappedInput.wasReleased(nextFrontButton) || touch.next;
   if (previousPage && currentPage > 0) {
     --currentPage;
     requestUpdate();
@@ -445,7 +495,10 @@ void BibleActivity::releaseChapter() {
   chapterText.reset();
   chapterTextLength = 0;
   chapterTextCapacity = 0;
-  chapterHasNotes = false;
+  chapterNoteCount = 0;
+  selectedNoteIndex = 0;
+  readerNoteMode = ReaderNoteMode::Reading;
+  readerConfirmLongHandled = false;
   readerLoadFailed = false;
   pageOffsets.clear();
   currentPage = 0;
@@ -557,7 +610,8 @@ bool BibleActivity::loadReaderChapterLocked() {
   }
 
   if (!bible::BibleLibrary::loadChapter(*version, *book, chapter, chapterText, chapterTextLength,
-                                        chapterTextCapacity, chapterHasNotes)) {
+                                        chapterTextCapacity, chapterNotes.data(), chapterNotes.size(),
+                                        chapterNoteCount)) {
     readerLoadFailed = true;
     return false;
   }
@@ -577,6 +631,35 @@ void BibleActivity::changeReaderChapter(const int direction) {
     chapterIndex = candidate;
     loadReaderChapterLocked();
   }
+  requestUpdate();
+}
+
+int BibleActivity::pageForTextOffset(const size_t offset) const {
+  if (pageOffsets.empty()) return 0;
+  const auto nextPage = std::upper_bound(pageOffsets.begin(), pageOffsets.end(), offset);
+  return nextPage == pageOffsets.begin() ? 0 : static_cast<int>(nextPage - pageOffsets.begin() - 1);
+}
+
+void BibleActivity::activateNoteSelection() {
+  if (chapterNoteCount == 0) return;
+  selectedNoteIndex = 0;
+  for (size_t i = 0; i < chapterNoteCount; ++i) {
+    if (pageForTextOffset(chapterNotes[i].markerOffset) >= currentPage) {
+      selectedNoteIndex = i;
+      break;
+    }
+    selectedNoteIndex = i;
+  }
+  currentPage = pageForTextOffset(chapterNotes[selectedNoteIndex].markerOffset);
+  readerNoteMode = ReaderNoteMode::Selecting;
+  requestUpdate();
+}
+
+void BibleActivity::moveSelectedNote(const int direction) {
+  if (chapterNoteCount == 0 || direction == 0) return;
+  const int count = static_cast<int>(chapterNoteCount);
+  selectedNoteIndex = static_cast<size_t>(wrappedIndex(static_cast<int>(selectedNoteIndex) + direction, count));
+  currentPage = pageForTextOffset(chapterNotes[selectedNoteIndex].markerOffset);
   requestUpdate();
 }
 
@@ -601,7 +684,7 @@ bool BibleActivity::nextVisualLine(const size_t offset, VisualLine& line) {
     if (length >= LINE_BUFFER_SIZE) return false;
     memcpy(lineBuffer, text + offset, length);
     lineBuffer[length] = '\0';
-    return renderer.getTextAdvanceX(readerFontId, lineBuffer, EpdFontFamily::REGULAR) <= viewportWidth;
+    return measureVisualText(lineBuffer) <= viewportWidth;
   };
 
   while (candidateEnd > offset && !fits(candidateEnd)) {
@@ -633,6 +716,78 @@ bool BibleActivity::nextVisualLine(const size_t offset, VisualLine& line) {
   if (next <= offset) next = std::min(chapterTextLength, offset + 1);
   line = VisualLine{offset, lineEnd - offset, next};
   return true;
+}
+
+int BibleActivity::measureVisualText(char* text) {
+  if (!text) return 0;
+  int width = 0;
+  char* segment = text;
+  char* cursor = text;
+  while (*cursor) {
+    if (*cursor != bible::NOTE_MARKER_START) {
+      ++cursor;
+      continue;
+    }
+    const char savedStart = *cursor;
+    *cursor = '\0';
+    width += renderer.getTextAdvanceX(readerFontId, segment, EpdFontFamily::REGULAR);
+    *cursor = savedStart;
+
+    char* markerEnd = strchr(cursor + 1, bible::NOTE_MARKER_END);
+    if (!markerEnd) {
+      segment = cursor;
+      break;
+    }
+    const char savedEnd = *markerEnd;
+    *markerEnd = '\0';
+    char markerLabel[16]{};
+    snprintf(markerLabel, sizeof(markerLabel), "[%s]", cursor + 1);
+    width += renderer.getTextAdvanceX(SMALL_FONT_ID, markerLabel, EpdFontFamily::REGULAR);
+    *markerEnd = savedEnd;
+    cursor = markerEnd + 1;
+    segment = cursor;
+  }
+  width += renderer.getTextAdvanceX(readerFontId, segment, EpdFontFamily::REGULAR);
+  return width;
+}
+
+void BibleActivity::drawVisualText(int x, const int y, char* text) {
+  if (!text) return;
+  char* segment = text;
+  char* cursor = text;
+  while (*cursor) {
+    if (*cursor != bible::NOTE_MARKER_START) {
+      ++cursor;
+      continue;
+    }
+    const char savedStart = *cursor;
+    *cursor = '\0';
+    renderer.drawText(readerFontId, x, y, segment);
+    x += renderer.getTextAdvanceX(readerFontId, segment, EpdFontFamily::REGULAR);
+    *cursor = savedStart;
+
+    char* markerEnd = strchr(cursor + 1, bible::NOTE_MARKER_END);
+    if (!markerEnd) {
+      segment = cursor;
+      break;
+    }
+    const char savedEnd = *markerEnd;
+    *markerEnd = '\0';
+    char markerLabel[16]{};
+    snprintf(markerLabel, sizeof(markerLabel), "[%s]", cursor + 1);
+    const int markerWidth = renderer.getTextAdvanceX(SMALL_FONT_ID, markerLabel, EpdFontFamily::REGULAR);
+    const int markerHeight = renderer.getLineHeight(SMALL_FONT_ID);
+    const unsigned long markerNumber = strtoul(cursor + 1, nullptr, 10);
+    const bool selected = readerNoteMode != ReaderNoteMode::Reading && selectedNoteIndex < chapterNoteCount &&
+                          markerNumber == chapterNotes[selectedNoteIndex].number;
+    if (selected) renderer.fillRoundedRect(x - 1, y - 2, markerWidth + 2, markerHeight, 2, Color::Black);
+    renderer.drawText(SMALL_FONT_ID, x, y - 2, markerLabel, !selected);
+    x += markerWidth;
+    *markerEnd = savedEnd;
+    cursor = markerEnd + 1;
+    segment = cursor;
+  }
+  renderer.drawText(readerFontId, x, y, segment);
 }
 
 void BibleActivity::buildPageIndex() {
@@ -830,6 +985,81 @@ void BibleActivity::renderChapters() {
   renderer.displayBuffer();
 }
 
+void BibleActivity::drawWrappedNoteText(const Rect& bounds, const char* text) {
+  if (!text || bounds.width <= 0 || bounds.height <= 0) return;
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  int y = bounds.y;
+  size_t offset = 0;
+  const size_t textLength = strlen(text);
+  while (offset < textLength && y + lineHeight <= bounds.y + bounds.height) {
+    while (offset < textLength && (text[offset] == ' ' || text[offset] == '\n' || text[offset] == '\r')) ++offset;
+    if (offset >= textLength) break;
+    size_t paragraphEnd = offset;
+    while (paragraphEnd < textLength && text[paragraphEnd] != '\n' && text[paragraphEnd] != '\r') ++paragraphEnd;
+    size_t end = std::min(paragraphEnd, offset + LINE_BUFFER_SIZE - 1);
+    while (end > offset && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
+    while (end > offset) {
+      const size_t length = end - offset;
+      memcpy(lineBuffer, text + offset, length);
+      lineBuffer[length] = '\0';
+      if (renderer.getTextAdvanceX(UI_12_FONT_ID, lineBuffer, EpdFontFamily::REGULAR) <= bounds.width) break;
+      --end;
+      while (end > offset && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
+    }
+    if (end == offset) end = std::min(textLength, offset + 1);
+    if (end < paragraphEnd) {
+      size_t wordEnd = end;
+      while (wordEnd > offset && text[wordEnd - 1] != ' ') --wordEnd;
+      if (wordEnd > offset) end = wordEnd - 1;
+    }
+    while (end > offset && text[end - 1] == ' ') --end;
+    const size_t length = std::min(end - offset, LINE_BUFFER_SIZE - 1);
+    memcpy(lineBuffer, text + offset, length);
+    lineBuffer[length] = '\0';
+    renderer.drawText(UI_12_FONT_ID, bounds.x, y, lineBuffer);
+    y += lineHeight;
+    offset = end;
+    while (offset < paragraphEnd && text[offset] == ' ') ++offset;
+    if (offset >= paragraphEnd) offset = paragraphEnd + (paragraphEnd < textLength ? 1 : 0);
+  }
+}
+
+void BibleActivity::drawNotePopup() {
+  if (selectedNoteIndex >= chapterNoteCount || !chapterText) return;
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  int marginTop = 0;
+  int marginRight = 0;
+  int marginBottom = 0;
+  int marginLeft = 0;
+  renderer.getOrientedViewableTRBL(&marginTop, &marginRight, &marginBottom, &marginLeft);
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
+  const int sideMargin = std::max(metrics.popupMarginX, metrics.contentSidePadding);
+  const int statusHeight = UITheme::getInstance().getStatusBarHeight();
+  const int popupBottom = screenHeight - marginBottom - statusHeight - metrics.verticalSpacing;
+  const int popupHeight = std::min(screenHeight / 2, std::max(110, screenHeight * 2 / 5));
+  const int x = marginLeft + sideMargin;
+  const int width = screenWidth - marginLeft - marginRight - sideMargin * 2;
+  const int y = std::max(marginTop + metrics.verticalSpacing, popupBottom - popupHeight);
+  const int height = popupBottom - y;
+  const int frame = std::max(1, metrics.popupFrameThickness);
+  const int radius = std::max(4, metrics.popupCornerRadius);
+  renderer.fillRoundedRect(x, y, width, height, radius, Color::Black);
+  renderer.fillRoundedRect(x + frame, y + frame, width - frame * 2, height - frame * 2,
+                           std::max(1, radius - frame), Color::White);
+
+  const auto& note = chapterNotes[selectedNoteIndex];
+  const int padding = std::max(metrics.verticalSpacing, 8);
+  snprintf(lineBuffer, sizeof(lineBuffer), "%s %u  •  %s %u", tr(STR_BIBLE_NOTES), note.number,
+           tr(STR_BIBLE_VERSE), note.verse);
+  renderer.drawText(UI_12_FONT_ID, x + padding, y + padding, lineBuffer);
+  const int headerHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  renderer.drawLine(x + padding, y + padding + headerHeight, x + width - padding, y + padding + headerHeight);
+  const int textTop = y + padding + headerHeight + std::max(4, metrics.verticalSpacing / 2);
+  drawWrappedNoteText(Rect{x + padding, textTop, width - padding * 2, y + height - padding - textTop},
+                      chapterText.get() + note.textOffset);
+}
+
 void BibleActivity::renderReader() {
   renderer.clearScreen();
   if (readerLoadFailed || !chapterText || pageOffsets.empty()) {
@@ -852,7 +1082,7 @@ void BibleActivity::renderReader() {
     for (int lineIndex = 0; lineIndex < linesPerPage && offset < chapterTextLength; ++lineIndex) {
       VisualLine line{};
       if (!nextVisualLine(offset, line) || line.next <= offset) break;
-      if (line.length > 0 && copyVisualLine(line)) renderer.drawText(readerFontId, viewportLeft, y, lineBuffer);
+      if (line.length > 0 && copyVisualLine(line)) drawVisualText(viewportLeft, y, lineBuffer);
       y += lineHeight;
       offset = line.next;
     }
@@ -872,5 +1102,6 @@ void BibleActivity::renderReader() {
   }
   const float progress = totalPages > 0 ? (currentPage + 1) * 100.0f / totalPages : 0.0f;
   GUI.drawStatusBar(renderer, progress, currentPage + 1, totalPages, std::move(title));
+  if (readerNoteMode == ReaderNoteMode::Popup) drawNotePopup();
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 }

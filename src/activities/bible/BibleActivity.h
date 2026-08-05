@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -8,9 +9,12 @@
 #include "activities/Activity.h"
 #include "bible/BibleLibrary.h"
 
+struct Rect;
+
 class BibleActivity final : public Activity {
   enum class View : uint8_t { Home, Chapters, Reader };
   enum class HomeMode : uint8_t { Books, Versions };
+  enum class ReaderNoteMode : uint8_t { Reading, Selecting, Popup };
   enum class BookDirection : uint8_t { None, Left, Right, Up, Down };
 
   struct VisualLine {
@@ -24,6 +28,7 @@ class BibleActivity final : public Activity {
   static constexpr unsigned long BOOK_REPEAT_START_MS = 500;
   static constexpr unsigned long BOOK_REPEAT_INTERVAL_MS = 150;
   static constexpr unsigned long VERSION_SELECT_LONG_PRESS_MS = 600;
+  static constexpr unsigned long NOTE_SELECT_LONG_PRESS_MS = 600;
 
   View view = View::Home;
   HomeMode homeMode = HomeMode::Books;
@@ -48,8 +53,12 @@ class BibleActivity final : public Activity {
   unsigned long lastBookRepeatMs = 0;
 
   bool readerLoadFailed = false;
-  bool chapterHasNotes = false;
   bool confirmLongHandled = false;
+  bool readerConfirmLongHandled = false;
+  ReaderNoteMode readerNoteMode = ReaderNoteMode::Reading;
+  std::array<bible::ChapterNote, bible::MAX_CHAPTER_NOTE_COUNT> chapterNotes{};
+  size_t chapterNoteCount = 0;
+  size_t selectedNoteIndex = 0;
   std::unique_ptr<char[]> chapterText;
   size_t chapterTextLength = 0;
   size_t chapterTextCapacity = 0;
@@ -80,12 +89,19 @@ class BibleActivity final : public Activity {
   void switchVersion(int direction);
   bool loadReaderChapterLocked();
   void changeReaderChapter(int direction);
+  void activateNoteSelection();
+  void moveSelectedNote(int direction);
+  int pageForTextOffset(size_t offset) const;
   void selectNearestChapter(uint16_t preferredChapter);
   int findBookIndex(const char* bookId) const;
 
   bool nextVisualLine(size_t offset, VisualLine& line);
   void buildPageIndex();
   bool copyVisualLine(const VisualLine& line);
+  int measureVisualText(char* text);
+  void drawVisualText(int x, int y, char* text);
+  void drawNotePopup();
+  void drawWrappedNoteText(const Rect& bounds, const char* text);
 
  public:
   explicit BibleActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)

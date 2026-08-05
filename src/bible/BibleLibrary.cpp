@@ -2,7 +2,6 @@
 
 #include <ArduinoJson.h>
 #include <HalStorage.h>
-#include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
 
@@ -133,20 +132,39 @@ bool endsWithTxt(const char* name) {
          std::tolower(static_cast<unsigned char>(extension[3])) == 't';
 }
 
-bool appendBytes(char* buffer, size_t& length, const size_t capacity, const char* text, const size_t textLength) {
-  if (!buffer || !text || length + textLength >= capacity) return false;
-  memcpy(buffer + length, text, textLength);
-  length += textLength;
-  buffer[length] = '\0';
-  return true;
+uint16_t noteVerseNumber(const JsonVariantConst value) {
+  if (value.is<uint16_t>()) return value.as<uint16_t>();
+  const char* text = value.as<const char*>();
+  if (!text || text[0] == '\0') return 0;
+  char* end = nullptr;
+  const long number = strtol(text, &end, 10);
+  return end && end != text && *end == '\0' && number > 0 && number <= UINT16_MAX ? static_cast<uint16_t>(number) : 0;
 }
 
-bool appendString(char* buffer, size_t& length, const size_t capacity, const char* text) {
-  return text && appendBytes(buffer, length, capacity, text, strlen(text));
+bool findVerseMarkerOffset(const char* buffer, const size_t length, const uint16_t verse, size_t& offset) {
+  size_t lineStart = 0;
+  while (lineStart < length) {
+    char* end = nullptr;
+    const long number = strtol(buffer + lineStart, &end, 10);
+    if (end != buffer + lineStart && number == verse && (*end == ' ' || *end == NOTE_MARKER_START)) {
+      offset = static_cast<size_t>(end - buffer);
+      while (offset < length && buffer[offset] == NOTE_MARKER_START) {
+        while (offset < length && buffer[offset] != NOTE_MARKER_END) ++offset;
+        if (offset < length) ++offset;
+      }
+      return true;
+    }
+    const char* newline = static_cast<const char*>(memchr(buffer + lineStart, '\n', length - lineStart));
+    if (!newline) break;
+    lineStart = static_cast<size_t>(newline - buffer) + 1;
+  }
+  return false;
 }
 
-void appendNotes(const char* path, const BookInfo& book, const uint16_t chapter, char* buffer, size_t& length,
-                 const size_t capacity, bool& hasNotes) {
+void loadNotes(const char* path, const BookInfo& book, const uint16_t chapter, char* buffer, size_t& length,
+               const size_t capacity, ChapterNote* output, const size_t outputCapacity, size_t& outputCount) {
+  outputCount = 0;
+  if (!output || outputCapacity == 0) return;
   JsonDocument document;
   if (!parseJsonFile(path, MAX_NOTES_FILE_BYTES, document)) return;
 
@@ -159,41 +177,43 @@ void appendNotes(const char* path, const BookInfo& book, const uint16_t chapter,
     return;
   }
 
-  bool headingWritten = false;
-  size_t noteCount = 0;
+  size_t textTail = capacity;
+  uint16_t sourceNumber = 0;
   for (const JsonObjectConst note : notes) {
-    if (noteCount++ >= MAX_CHAPTER_COUNT) break;
+    if (++sourceNumber > MAX_CHAPTER_NOTE_COUNT || outputCount >= outputCapacity) break;
     const char* noteText = note["text"].as<const char*>();
     if (!noteText || noteText[0] == '\0') continue;
-
-    char verseBuffer[16]{};
-    const char* verse = note["verse"].as<const char*>();
-    if (!verse || verse[0] == '\0') {
-      const uint16_t verseNumber = note["verse"].as<uint16_t>();
-      if (verseNumber == 0) continue;
-      snprintf(verseBuffer, sizeof(verseBuffer), "%u", verseNumber);
-      verse = verseBuffer;
-    }
-
-    if (!headingWritten) {
-      if (!appendString(buffer, length, capacity, "\n\n") ||
-          !appendString(buffer, length, capacity, tr(STR_BIBLE_NOTES)) ||
-          !appendString(buffer, length, capacity, "\n")) {
-        LOG_ERR(LOG_TAG, "Notes exceed chapter buffer: %s", path);
-        return;
-      }
-      headingWritten = true;
-    }
-
-    if (!appendString(buffer, length, capacity, tr(STR_BIBLE_VERSE)) ||
-        !appendString(buffer, length, capacity, " ") || !appendString(buffer, length, capacity, verse) ||
-        !appendString(buffer, length, capacity, ": ") || !appendString(buffer, length, capacity, noteText) ||
-        !appendString(buffer, length, capacity, "\n")) {
-      LOG_ERR(LOG_TAG, "Notes exceed chapter buffer: %s", path);
-      return;
-    }
-    hasNotes = true;
+    const uint16_t verse = noteVerseNumber(note["verse"]);
+    const size_t noteLength = strlen(noteText);
+    if (verse == 0 || noteLength + 1 >= textTail || textTail - noteLength - 1 <= length) continue;
+    textTail -= noteLength + 1;
+    memcpy(buffer + textTail, noteText, noteLength + 1);
+    output[outputCount++] = ChapterNote{verse, sourceNumber, 0, static_cast<uint32_t>(textTail)};
   }
+
+  std::sort(output, output + outputCount, [](const ChapterNote& left, const ChapterNote& right) {
+    if (left.verse != right.verse) return left.verse < right.verse;
+    return left.number < right.number;
+  });
+
+  size_t validCount = 0;
+  for (size_t i = 0; i < outputCount; ++i) {
+    size_t markerOffset = 0;
+    if (!findVerseMarkerOffset(buffer, length, output[i].verse, markerOffset)) continue;
+    char marker[8]{};
+    const int markerLength = snprintf(marker, sizeof(marker), "%c%u%c", NOTE_MARKER_START, output[i].number,
+                                      NOTE_MARKER_END);
+    if (markerLength <= 0 || length + static_cast<size_t>(markerLength) + 1 > textTail) {
+      LOG_ERR(LOG_TAG, "Note markers exceed chapter buffer: %s", path);
+      break;
+    }
+    memmove(buffer + markerOffset + markerLength, buffer + markerOffset, length - markerOffset + 1);
+    memcpy(buffer + markerOffset, marker, markerLength);
+    length += static_cast<size_t>(markerLength);
+    output[i].markerOffset = static_cast<uint32_t>(markerOffset);
+    output[validCount++] = output[i];
+  }
+  outputCount = validCount;
 }
 
 bool loadDailyVerseFile(const char* path, DailyVerse& verse) {
@@ -349,11 +369,11 @@ bool BibleLibrary::loadDailyVerse(DailyVerse& verse) {
 
 bool BibleLibrary::loadChapter(const VersionInfo& version, const BookInfo& book, const uint16_t chapter,
                                std::unique_ptr<char[]>& text, size_t& textLength, size_t& textCapacity,
-                               bool& hasNotes) {
+                               ChapterNote* notes, const size_t notesCapacity, size_t& noteCount) {
   text.reset();
   textLength = 0;
   textCapacity = 0;
-  hasNotes = false;
+  noteCount = 0;
 
   char chapterPath[MAX_PATH_LENGTH];
   char notesPath[MAX_PATH_LENGTH];
@@ -415,7 +435,9 @@ bool BibleLibrary::loadChapter(const VersionInfo& version, const BookInfo& book,
   }
   chapterText[normalizedLength] = '\0';
 
-  if (notesSize > 0) appendNotes(notesPath, book, chapter, chapterText.get(), normalizedLength, capacity, hasNotes);
+  if (notesSize > 0) {
+    loadNotes(notesPath, book, chapter, chapterText.get(), normalizedLength, capacity, notes, notesCapacity, noteCount);
+  }
 
   text = std::move(chapterText);
   textLength = normalizedLength;
