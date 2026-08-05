@@ -18,6 +18,8 @@ class BibleActivity final : public Activity {
   };
 
   static constexpr size_t LINE_BUFFER_SIZE = 512;
+  static constexpr unsigned long BOOK_REPEAT_START_MS = 500;
+  static constexpr unsigned long BOOK_REPEAT_INTERVAL_MS = 150;
 
   View view = View::Home;
   std::vector<bible::VersionInfo> versions;
@@ -37,6 +39,8 @@ class BibleActivity final : public Activity {
   int viewportWidth = 0;
   int readerFontId = 0;
   int pagesUntilFullRefresh = 0;
+  int bookRepeatDirection = 0;
+  unsigned long lastBookRepeatMs = 0;
 
   bool readerLoadFailed = false;
   bool chapterHasNotes = false;
@@ -60,6 +64,9 @@ class BibleActivity final : public Activity {
   void enterChapters();
   void openReader();
   void releaseChapter();
+  bool handleRepeatedBookNavigation();
+  void moveHomeBook(int direction);
+  void changeChapterBook(int direction);
   bool switchVersionLocked(int direction);
   void switchVersion(int direction);
   bool loadReaderChapterLocked();

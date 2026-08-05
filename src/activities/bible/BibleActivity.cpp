@@ -115,25 +115,7 @@ void BibleActivity::handleHomeInput() {
     return;
   }
 
-  if (!books.empty() && mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    bookIndex = ButtonNavigator::previousIndex(bookIndex, static_cast<int>(books.size()));
-    requestUpdate();
-    return;
-  }
-  if (!books.empty() && mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    bookIndex = ButtonNavigator::nextIndex(bookIndex, static_cast<int>(books.size()));
-    requestUpdate();
-    return;
-  }
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-    switchVersion(-1);
-    return;
-  }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    switchVersion(1);
-    return;
-  }
+  if (handleRepeatedBookNavigation()) return;
 
   const auto swipe = mappedInput.wasSwipe();
   if (!books.empty() && swipe == MappedInputManager::SwipeDir::Left) {
@@ -163,6 +145,48 @@ void BibleActivity::handleHomeInput() {
   }
 }
 
+bool BibleActivity::handleRepeatedBookNavigation() {
+  if (books.empty()) return false;
+
+  int pressedDirection = 0;
+  if (mappedInput.wasPressed(MappedInputManager::Button::NavPrevious)) {
+    pressedDirection = -1;
+  } else if (mappedInput.wasPressed(MappedInputManager::Button::NavNext)) {
+    pressedDirection = 1;
+  }
+
+  if (pressedDirection != 0) {
+    bookRepeatDirection = pressedDirection;
+    lastBookRepeatMs = millis();
+    moveHomeBook(pressedDirection);
+    return true;
+  }
+
+  if (bookRepeatDirection == 0) return false;
+  const auto heldButton = bookRepeatDirection < 0 ? MappedInputManager::Button::NavPrevious
+                                                  : MappedInputManager::Button::NavNext;
+  if (!mappedInput.isPressed(heldButton)) {
+    bookRepeatDirection = 0;
+    return false;
+  }
+
+  const unsigned long now = millis();
+  if (mappedInput.getHeldTime() <= BOOK_REPEAT_START_MS || now - lastBookRepeatMs < BOOK_REPEAT_INTERVAL_MS) {
+    return false;
+  }
+
+  lastBookRepeatMs = now;
+  moveHomeBook(bookRepeatDirection);
+  return true;
+}
+
+void BibleActivity::moveHomeBook(const int direction) {
+  if (books.empty() || direction == 0) return;
+  bookIndex = direction < 0 ? ButtonNavigator::previousIndex(bookIndex, static_cast<int>(books.size()))
+                            : ButtonNavigator::nextIndex(bookIndex, static_cast<int>(books.size()));
+  requestUpdate();
+}
+
 void BibleActivity::handleChapterInput() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     enterHome();
@@ -184,11 +208,11 @@ void BibleActivity::handleChapterInput() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    switchVersion(-1);
+    changeChapterBook(-1);
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    switchVersion(1);
+    changeChapterBook(1);
     return;
   }
 
@@ -214,6 +238,25 @@ void BibleActivity::handleChapterInput() {
     chapterIndex = ButtonNavigator::previousPageIndex(chapterIndex, static_cast<int>(chapters.size()), pageItems);
     requestUpdate();
   }
+}
+
+void BibleActivity::changeChapterBook(const int direction) {
+  if (books.empty() || direction == 0) return;
+
+  {
+    RenderLock lock(*this);
+    const uint16_t preferredChapter = currentChapter();
+    bookIndex = direction < 0 ? ButtonNavigator::previousIndex(bookIndex, static_cast<int>(books.size()))
+                              : ButtonNavigator::nextIndex(bookIndex, static_cast<int>(books.size()));
+    chapters.clear();
+    if (const auto* version = currentVersion()) {
+      if (const auto* book = currentBook()) {
+        bible::BibleLibrary::loadAvailableChapters(*version, *book, chapters);
+      }
+    }
+    selectNearestChapter(preferredChapter == 0 ? 1 : preferredChapter);
+  }
+  requestUpdate();
 }
 
 void BibleActivity::handleReaderInput() {
@@ -257,6 +300,7 @@ void BibleActivity::enterHome() {
     releaseChapter();
     renderer.setOrientation(GfxRenderer::Orientation::Portrait);
     view = View::Home;
+    bookRepeatDirection = 0;
   }
   requestUpdate();
 }
@@ -585,26 +629,50 @@ void BibleActivity::renderHome() {
 
   const int selectorTop = contentTop + verseHeight;
   renderer.drawLine(metrics.contentSidePadding, selectorTop, pageWidth - metrics.contentSidePadding, selectorTop);
-  GUI.drawSubHeader(renderer, Rect{0, selectorTop + metrics.verticalSpacing, pageWidth, metrics.headerHeight},
-                    tr(STR_BOOK), version ? version->id : nullptr);
-
   const auto* book = currentBook();
+  GUI.drawSubHeader(renderer, Rect{0, selectorTop + metrics.verticalSpacing, pageWidth, metrics.headerHeight},
+                    book ? book->name : tr(STR_BOOK), version ? version->id : nullptr);
+
   const int bookTop = selectorTop + metrics.verticalSpacing + metrics.headerHeight;
   const Rect bookBounds{metrics.contentSidePadding, bookTop, pageWidth - metrics.contentSidePadding * 2,
                         std::max(1, contentBottom - bookTop)};
   if (book) {
-    renderer.drawRect(bookBounds.x, bookBounds.y, bookBounds.width, bookBounds.height);
-    UITheme::drawCenteredWrappedText(renderer, bookBounds, UI_12_FONT_ID, book->name, 2, true,
-                                     EpdFontFamily::BOLD);
-    GUI.drawHelpText(renderer, Rect{bookBounds.x, bookBounds.y + bookBounds.height - renderer.getLineHeight(SMALL_FONT_ID),
-                                    bookBounds.width, renderer.getLineHeight(SMALL_FONT_ID)},
-                     tr(STR_BIBLE_VERSION_UP_DOWN));
+    constexpr int maxColumns = 11;
+    const int bookCount = static_cast<int>(books.size());
+    const int columns = std::min(maxColumns, bookCount);
+    const int rows = (bookCount + columns - 1) / columns;
+    const int cellWidth = std::max(1, bookBounds.width / columns);
+    const int cellHeight = std::max(1, bookBounds.height / rows);
+    const int labelHeight = renderer.getLineHeight(SMALL_FONT_ID);
+
+    for (int index = 0; index < bookCount; ++index) {
+      const int column = index % columns;
+      const int row = index / columns;
+      const int cellX = bookBounds.x + column * cellWidth;
+      const int cellY = bookBounds.y + row * cellHeight;
+      const int cellRight = column + 1 == columns ? bookBounds.x + bookBounds.width : cellX + cellWidth;
+      const int cellBottom = row + 1 == rows ? bookBounds.y + bookBounds.height : cellY + cellHeight;
+      const int width = cellRight - cellX;
+      const int height = cellBottom - cellY;
+      const bool selected = index == bookIndex;
+      if (selected) {
+        renderer.fillRect(cellX, cellY, width, height, true);
+      } else {
+        renderer.drawRect(cellX, cellY, width, height, true);
+      }
+
+      char label[5]{};
+      snprintf(label, sizeof(label), "%.4s", books[index].id);
+      const int labelWidth = renderer.getTextWidth(SMALL_FONT_ID, label);
+      renderer.drawText(SMALL_FONT_ID, cellX + std::max(0, (width - labelWidth) / 2),
+                        cellY + std::max(0, (height - labelHeight) / 2), label, !selected);
+    }
   } else {
     const char* message = versions.empty() ? tr(STR_BIBLE_NO_VERSIONS) : tr(STR_BIBLE_NO_BOOKS);
     UITheme::drawCenteredWrappedText(renderer, bookBounds, UI_12_FONT_ID, message, 3);
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
 }
