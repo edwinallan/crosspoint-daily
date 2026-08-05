@@ -10,6 +10,8 @@
 
 class BibleActivity final : public Activity {
   enum class View : uint8_t { Home, Chapters, Reader };
+  enum class HomeMode : uint8_t { Books, Versions };
+  enum class BookDirection : uint8_t { None, Left, Right, Up, Down };
 
   struct VisualLine {
     size_t start = 0;
@@ -18,10 +20,13 @@ class BibleActivity final : public Activity {
   };
 
   static constexpr size_t LINE_BUFFER_SIZE = 512;
+  static constexpr int BOOK_GRID_COLUMNS = 11;
   static constexpr unsigned long BOOK_REPEAT_START_MS = 500;
   static constexpr unsigned long BOOK_REPEAT_INTERVAL_MS = 150;
+  static constexpr unsigned long VERSION_SELECT_LONG_PRESS_MS = 600;
 
   View view = View::Home;
+  HomeMode homeMode = HomeMode::Books;
   std::vector<bible::VersionInfo> versions;
   std::vector<bible::BookInfo> books;
   std::vector<uint16_t> chapters;
@@ -39,11 +44,12 @@ class BibleActivity final : public Activity {
   int viewportWidth = 0;
   int readerFontId = 0;
   int pagesUntilFullRefresh = 0;
-  int bookRepeatDirection = 0;
+  BookDirection bookRepeatDirection = BookDirection::None;
   unsigned long lastBookRepeatMs = 0;
 
   bool readerLoadFailed = false;
   bool chapterHasNotes = false;
+  bool confirmLongHandled = false;
   std::unique_ptr<char[]> chapterText;
   size_t chapterTextLength = 0;
   size_t chapterTextCapacity = 0;
@@ -64,8 +70,11 @@ class BibleActivity final : public Activity {
   void enterChapters();
   void openReader();
   void releaseChapter();
+  bool handleHomeSelect();
   bool handleRepeatedBookNavigation();
-  void moveHomeBook(int direction);
+  bool handleVersionNavigation();
+  void moveHomeBook(BookDirection direction);
+  MappedInputManager::Button buttonForBookDirection(BookDirection direction) const;
   void changeChapterBook(int direction);
   bool switchVersionLocked(int direction);
   void switchVersion(int direction);
