@@ -28,7 +28,7 @@ This is a startup refresh, not continuous background synchronization.
 Default base URL:
 
 ```text
-https://my-daily.allan.ch/api/
+https://my-daily.allan.ch/server
 ```
 
 The default must exist as a clearly named constant in code.
@@ -36,7 +36,7 @@ The default must exist as a clearly named constant in code.
 Add a **Daily** section to CrossPoint Settings containing:
 
 - Server URL
-- Auth username and password
+- Bearer token
 - Refresh on startup toggle
 - Manual refresh action
 - Reload all Daily API endpoints action
@@ -56,7 +56,10 @@ GET  {baseUrl}/focus
 POST {baseUrl}/tasks/{taskId}
 ```
 
-Use Basic Auth for both GET requests and task updates. The two GET requests
+Use Bearer authentication for every request to the exact
+`my-daily.allan.ch` host. Never forward that header across a redirect to a
+different host. The token is a local secret and must not be committed to the
+repository. The two GET requests
 are independent: `/verse` returns only the current daily Bible verse as JSON,
 while `/calendar` returns the complete calendar and task JSON for the next
 five months, not only today's events, and `/focus` returns the timetable that
@@ -183,6 +186,13 @@ The lower part of the screen contains a Bible-book selector.
 
 Use Left and Right to select a book and Confirm to open it.
 
+When the daily reference can be resolved against the selected manifest, start
+with that book selected. Opening it starts with the referenced chapter selected,
+and opening the chapter starts on the first referenced verse. A small segmented
+gauge shows `memorisation.level` relative to `memorisation.scale`. Daily text
+that does not fit the available home-screen area is clipped rather than growing
+the layout.
+
 ### Bible reader
 
 After selecting a book:
@@ -200,6 +210,17 @@ Initial versions:
 - French: LS21
 
 Bible versions must be detected from the files available on the SD card rather than hardcoded to only these two versions. If a book is missing from the version, switch to next available version in same Language.
+
+If the API translation abbreviation does not match a detected local version,
+treat it as a custom version and show the API text for the referenced
+chapter or excerpt. If the API translation name ends in ` Modified`, remove
+that suffix from both the name and abbreviation when resolving the local source
+version. Continue to display the custom API text for the daily excerpt, but use
+the resolved source version for adjacent chapters and normal Bible navigation.
+
+When `verse.notes.personal` contains text, append it as a footnote after the
+custom API excerpt. Local `<CHAPTER>.notes.json` notes retain their existing
+interactive note behavior.
 
 ## Bible storage format
 
@@ -302,12 +323,13 @@ Do not bundle copyrighted Bible text in the public repository unless redistribut
 ```
 
 A valid daily verse response requires `success` to be `true` and must contain
-`date`, `verse.reference`, `verse.translation.abbreviation`,
+`date`, a parseable `verse.reference`, `verse.translation.abbreviation`,
 `verse.translation.name`, `verse.translation.language`, and non-empty
-`verse.text`. The Daily screens display the cached `verse.text` without
+`verse.text`. References use the form `<book> <chapter>:<verse>` or
+`<book> <chapter>:<first>-<last>`. The Daily screens display the cached `verse.text` without
 resolving or replacing it from local Bible files. Memorisation data and notes
-may be cached with the response but are not required for the initial Daily
-screens.
+are cached when present. Oversized display text and personal notes are safely
+truncated to their fixed firmware buffers.
 
 `/calendar` JSON structure:
 
@@ -418,7 +440,7 @@ The normal sleep-screen renderer must not overwrite the Daily Visualizer after i
 2. Build the Bible reader using the Bible files already on the SD card.
 3. Add the verse cache.
 4. Build the Bible home screen.
-5. Build the Calendar views using local JSON fixtures.
+5. Build the Calendar views using my-daily.allan.ch api.
 6. Add focus filtering.
 7. Add Calendar unlocking.
 8. Add Daily settings.

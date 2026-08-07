@@ -55,6 +55,12 @@ class BibleActivity final : public Activity {
   bool readerLoadFailed = false;
   bool confirmLongHandled = false;
   bool readerConfirmLongHandled = false;
+  bool dailyTranslationCustom = false;
+  bool dailySelectionAvailable = false;
+  bool dailyJumpPending = false;
+  bool showingDailyApiText = false;
+  int dailySourceVersionIndex = -1;
+  char dailyBookId[12]{};
   ReaderNoteMode readerNoteMode = ReaderNoteMode::Reading;
   std::array<bible::ChapterNote, bible::MAX_CHAPTER_NOTE_COUNT> chapterNotes{};
   size_t chapterNoteCount = 0;
@@ -94,12 +100,19 @@ class BibleActivity final : public Activity {
   int pageForTextOffset(size_t offset) const;
   void selectNearestChapter(uint16_t preferredChapter);
   int findBookIndex(const char* bookId) const;
+  int findVersionIndex(const char* abbreviation, const char* name) const;
+  int findDailyBookIndex() const;
+  void selectDailyContext();
+  bool isDailyBookAndChapter() const;
+  bool shouldUseDailyApiText() const;
+  bool findVerseOffset(uint16_t verse, size_t& offset) const;
 
   bool nextVisualLine(size_t offset, VisualLine& line);
   void buildPageIndex();
   bool copyVisualLine(const VisualLine& line);
   int measureVisualText(char* text);
   void drawVisualText(int x, int y, char* text);
+  void drawMemorisationGauge(int pageWidth, int y);
   void drawNotePopup();
   void drawWrappedNoteText(const Rect& bounds, const char* text);
 

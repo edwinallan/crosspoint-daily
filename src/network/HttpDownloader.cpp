@@ -8,6 +8,10 @@
 #include <functional>
 #include <string>
 
+#ifndef MY_DAILY_BEARER_TOKEN
+#define MY_DAILY_BEARER_TOKEN ""
+#endif
+
 #if defined(FREEINK_NET_WOLFSSL)
 #include <SecureHttpClient.h>
 
@@ -32,6 +36,8 @@ constexpr int HTTP_TX_BUF = 512;
 constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr size_t READ_CHUNK = 1024;
 constexpr int MAX_REDIRECTS = 5;
+constexpr char MY_DAILY_HTTPS_ORIGIN[] = "https://my-daily.allan.ch";
+constexpr char MY_DAILY_TOKEN[] = MY_DAILY_BEARER_TOKEN;
 
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
@@ -43,6 +49,33 @@ struct Sink {
 
 bool isRedirect(int status) {
   return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
+bool isMyDailyUrl(const std::string& url) {
+  constexpr size_t originLength = sizeof(MY_DAILY_HTTPS_ORIGIN) - 1;
+  if (url.size() < originLength || url.compare(0, originLength, MY_DAILY_HTTPS_ORIGIN) != 0) return false;
+  if (url.size() == originLength) return true;
+  const char suffix = url[originLength];
+  if (suffix == '/' || suffix == '?' || suffix == '#') return true;
+  return url.compare(originLength, 4, ":443") == 0 &&
+         (url.size() == originLength + 4 || url[originLength + 4] == '/' || url[originLength + 4] == '?' ||
+          url[originLength + 4] == '#');
+}
+
+template <typename AddHeader>
+void addAuthorization(const std::string& url, const std::string& username, const std::string& password,
+                      AddHeader&& addHeader) {
+  if (isMyDailyUrl(url)) {
+    if (MY_DAILY_TOKEN[0] == '\0') {
+      LOG_ERR("HTTP", "my-daily Bearer token is not configured");
+      return;
+    }
+    addHeader(std::string("Bearer ") + MY_DAILY_TOKEN);
+    return;
+  }
+  if (username.empty() || password.empty()) return;
+  const std::string credentials = username + ":" + password;
+  addHeader(std::string("Basic ") + base64::encode(credentials.c_str()).c_str());
 }
 
 #if defined(FREEINK_NET_WOLFSSL)
@@ -62,11 +95,8 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
     // append a second User-Agent header, which strict servers reject (aiohttp
     // answers 400 "Duplicate 'User-Agent' header found").
     http.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
-    if (!username.empty() && !password.empty()) {
-      const std::string credentials = username + ":" + password;
-      const String encoded = base64::encode(credentials.c_str());
-      http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
-    }
+    addAuthorization(url, username, password,
+                     [&http](const std::string& value) { http.addHeader("Authorization", value); });
 
     LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
     const int status = http.GET(
@@ -138,12 +168,9 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   }
 
   esp_http_client_set_header(client, "User-Agent", "CrossPoint-ESP32-" CROSSPOINT_VERSION);
-  if (!username.empty() && !password.empty()) {
-    // Preemptive Basic auth, like the prior addHeader; don't wait for a 401.
-    const std::string credentials = username + ":" + password;
-    const String header = "Basic " + base64::encode(credentials.c_str());
-    esp_http_client_set_header(client, "Authorization", header.c_str());
-  }
+  addAuthorization(url, username, password, [client](const std::string& value) {
+    esp_http_client_set_header(client, "Authorization", value.c_str());
+  });
 
   // open()/read() does not auto-follow redirects (only perform() does), so step
   // 30x responses manually. OPDS download endpoints and the GitHub release CDN
@@ -157,6 +184,14 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   int64_t contentLength = esp_http_client_fetch_headers(client);
   int status = esp_http_client_get_status_code(client);
   for (int hop = 0; isRedirect(status) && hop < MAX_REDIRECTS; ++hop) {
+    // esp_http_client retains custom headers when it redirects. Refuse a Daily
+    // redirect on this transport so its host-bound Bearer token cannot leak.
+    // The configured Daily endpoint is direct and currently returns 200.
+    if (isMyDailyUrl(url)) {
+      LOG_ERR("HTTP", "refusing redirect for authenticated my-daily request");
+      esp_http_client_cleanup(client);
+      return HttpDownloader::HTTP_ERROR;
+    }
     if (esp_http_client_set_redirection(client) != ESP_OK) break;
     esp_http_client_close(client);
     err = esp_http_client_open(client, 0);

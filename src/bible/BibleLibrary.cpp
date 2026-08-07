@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "network/HttpDownloader.h"
+
 namespace bible {
 namespace {
 
@@ -21,6 +23,7 @@ constexpr size_t MAX_CHAPTER_FILE_BYTES = 32 * 1024;
 constexpr size_t MAX_NOTES_FILE_BYTES = 16 * 1024;
 constexpr size_t NOTES_LABEL_ALLOWANCE = 2048;
 constexpr size_t MAX_PATH_LENGTH = 160;
+constexpr char DAILY_CACHE_DIRECTORY[] = "/.crosspoint/daily";
 
 bool copyExact(char* destination, const size_t destinationSize, const char* source) {
   if (!destination || destinationSize == 0 || !source || source[0] == '\0') return false;
@@ -28,6 +31,82 @@ bool copyExact(char* destination, const size_t destinationSize, const char* sour
   if (length >= destinationSize) return false;
   memcpy(destination, source, length + 1);
   return true;
+}
+
+bool copyTruncatedUtf8(char* destination, const size_t destinationSize, const char* source) {
+  if (!destination || destinationSize == 0 || !source || source[0] == '\0') return false;
+  size_t length = std::min(strlen(source), destinationSize - 1);
+  while (length > 0 && (static_cast<unsigned char>(source[length]) & 0xC0) == 0x80) --length;
+  memcpy(destination, source, length);
+  destination[length] = '\0';
+  return length > 0;
+}
+
+void appendTruncated(char* destination, const size_t destinationSize, const char* source) {
+  if (!destination || destinationSize == 0 || !source || source[0] == '\0') return;
+  const size_t used = strlen(destination);
+  if (used + 1 >= destinationSize) return;
+  size_t length = std::min(strlen(source), destinationSize - used - 1);
+  while (length > 0 && (static_cast<unsigned char>(source[length]) & 0xC0) == 0x80) --length;
+  memcpy(destination + used, source, length);
+  destination[used + length] = '\0';
+}
+
+bool parseReference(DailyVerse& verse) {
+  const char* colon = strrchr(verse.reference, ':');
+  if (!colon || colon == verse.reference || !std::isdigit(static_cast<unsigned char>(colon[1]))) return false;
+
+  const char* chapterStart = colon;
+  while (chapterStart > verse.reference && std::isdigit(static_cast<unsigned char>(chapterStart[-1]))) --chapterStart;
+  if (chapterStart == verse.reference || chapterStart[-1] != ' ') return false;
+
+  char* parseEnd = nullptr;
+  const long chapter = strtol(chapterStart, &parseEnd, 10);
+  if (parseEnd != colon || chapter <= 0 || chapter > MAX_CHAPTER_COUNT) return false;
+
+  const long verseStart = strtol(colon + 1, &parseEnd, 10);
+  if (parseEnd == colon + 1 || verseStart <= 0 || verseStart > UINT16_MAX) return false;
+  long verseEnd = verseStart;
+  if (*parseEnd == '-') {
+    char* rangeEnd = nullptr;
+    const long parsedEnd = strtol(parseEnd + 1, &rangeEnd, 10);
+    if (rangeEnd != parseEnd + 1 && parsedEnd >= verseStart && parsedEnd <= UINT16_MAX) {
+      verseEnd = parsedEnd;
+      parseEnd = rangeEnd;
+    }
+  }
+  if (*parseEnd != '\0') return false;
+
+  size_t bookLength = static_cast<size_t>(chapterStart - verse.reference - 1);
+  while (bookLength > 0 && verse.reference[bookLength - 1] == ' ') --bookLength;
+  if (bookLength == 0 || bookLength >= sizeof(verse.referenceBook)) return false;
+  memcpy(verse.referenceBook, verse.reference, bookLength);
+  verse.referenceBook[bookLength] = '\0';
+  verse.referenceChapter = static_cast<uint16_t>(chapter);
+  verse.referenceVerseStart = static_cast<uint16_t>(verseStart);
+  verse.referenceVerseEnd = static_cast<uint16_t>(verseEnd);
+  return true;
+}
+
+const char* personalNoteText(const JsonVariantConst note) {
+  if (note.is<const char*>()) return note.as<const char*>();
+  if (note.is<JsonObjectConst>()) return note["text"].as<const char*>();
+  return nullptr;
+}
+
+void parsePersonalNotes(const JsonVariantConst personal, char* destination, const size_t destinationSize) {
+  destination[0] = '\0';
+  if (personal.is<JsonArrayConst>()) {
+    for (const JsonVariantConst note : personal.as<JsonArrayConst>()) {
+      const char* text = personalNoteText(note);
+      if (!text || text[0] == '\0') continue;
+      if (destination[0] != '\0') appendTruncated(destination, destinationSize, "\n");
+      appendTruncated(destination, destinationSize, text);
+    }
+    return;
+  }
+  const char* text = personalNoteText(personal);
+  if (text && text[0] != '\0') copyTruncatedUtf8(destination, destinationSize, text);
 }
 
 const char* firstString(const JsonObjectConst object, const char* first, const char* second = nullptr,
@@ -218,6 +297,7 @@ void loadNotes(const char* path, const BookInfo& book, const uint16_t chapter, c
 }
 
 bool loadDailyVerseFile(const char* path, DailyVerse& verse) {
+  verse = DailyVerse{};
   JsonDocument document;
   if (!parseJsonFile(path, MAX_DAILY_VERSE_BYTES, document)) return false;
 
@@ -226,7 +306,6 @@ bool loadDailyVerseFile(const char* path, DailyVerse& verse) {
   const JsonObjectConst translation = verseObject["translation"].as<JsonObjectConst>();
   if (!root["success"].as<bool>() || verseObject.isNull() || translation.isNull()) return false;
 
-  DailyVerse candidate{};
   const char* date = root["date"].as<const char*>();
   const char* reference = verseObject["reference"].as<const char*>();
   const char* abbreviation = translation["abbreviation"].as<const char*>();
@@ -234,18 +313,24 @@ bool loadDailyVerseFile(const char* path, DailyVerse& verse) {
   const char* language = translation["language"].as<const char*>();
   const char* text = verseObject["text"].as<const char*>();
 
-  if (!copyExact(candidate.date, sizeof(candidate.date), date) ||
-      !copyExact(candidate.reference, sizeof(candidate.reference), reference) ||
-      !copyExact(candidate.translationAbbreviation, sizeof(candidate.translationAbbreviation), abbreviation) ||
-      !copyExact(candidate.translationName, sizeof(candidate.translationName), name) ||
-      !copyExact(candidate.translationLanguage, sizeof(candidate.translationLanguage), language) ||
-      !copyExact(candidate.text, sizeof(candidate.text), text)) {
+  if (!copyExact(verse.date, sizeof(verse.date), date) ||
+      !copyExact(verse.reference, sizeof(verse.reference), reference) ||
+      !copyExact(verse.translationAbbreviation, sizeof(verse.translationAbbreviation), abbreviation) ||
+      !copyExact(verse.translationName, sizeof(verse.translationName), name) ||
+      !copyExact(verse.translationLanguage, sizeof(verse.translationLanguage), language) ||
+      !copyTruncatedUtf8(verse.text, sizeof(verse.text), text) || !parseReference(verse)) {
     LOG_ERR(LOG_TAG, "Daily verse fields are missing or too long: %s", path);
+    verse = DailyVerse{};
     return false;
   }
 
-  candidate.valid = true;
-  verse = candidate;
+  const JsonObjectConst memorisation = verseObject["memorisation"].as<JsonObjectConst>();
+  if (!memorisation.isNull()) {
+    verse.memorisationLevel = memorisation["level"] | 0;
+    verse.memorisationScale = memorisation["scale"] | 0;
+  }
+  parsePersonalNotes(verseObject["notes"]["personal"], verse.personalNote, sizeof(verse.personalNote));
+  verse.valid = true;
   return true;
 }
 
@@ -364,8 +449,124 @@ bool BibleLibrary::loadAvailableChapters(const VersionInfo& version, const BookI
 bool BibleLibrary::loadDailyVerse(DailyVerse& verse) {
   verse = DailyVerse{};
   if (Storage.exists(DAILY_VERSE_CACHE_PATH) && loadDailyVerseFile(DAILY_VERSE_CACHE_PATH, verse)) return true;
+  if (Storage.exists(DAILY_VERSE_BACKUP_PATH) && loadDailyVerseFile(DAILY_VERSE_BACKUP_PATH, verse)) return true;
   if (Storage.exists(DAILY_VERSE_FIXTURE_PATH) && loadDailyVerseFile(DAILY_VERSE_FIXTURE_PATH, verse)) return true;
   return false;
+}
+
+bool BibleLibrary::refreshDailyVerse(DailyVerse& verse) {
+  if (!Storage.ensureDirectoryExists(DAILY_CACHE_DIRECTORY)) {
+    LOG_ERR(LOG_TAG, "Could not create Daily cache directory");
+    return false;
+  }
+  if (Storage.exists(DAILY_VERSE_TEMP_PATH)) Storage.remove(DAILY_VERSE_TEMP_PATH);
+
+  HalFile download;
+  if (!Storage.openFileForWrite(LOG_TAG, DAILY_VERSE_TEMP_PATH, download)) return false;
+  size_t downloaded = 0;
+  const bool fetched = HttpDownloader::fetchUrl(DAILY_VERSE_URL, [&download, &downloaded](const uint8_t* data,
+                                                                                         const size_t length) {
+    if (length > MAX_DAILY_VERSE_BYTES - downloaded) return false;
+    if (download.write(data, length) != length) return false;
+    downloaded += length;
+    return true;
+  });
+  download.close();  // Reopened for validation and renamed below.
+  if (!fetched || downloaded == 0) {
+    Storage.remove(DAILY_VERSE_TEMP_PATH);
+    return false;
+  }
+
+  // The response model is several KB and cannot safely live on the task stack.
+  // Keep one bounded, fallible heap object only for validation/install.
+  auto refreshed = makeUniqueNoThrow<DailyVerse>();
+  if (!refreshed) {
+    LOG_ERR(LOG_TAG, "OOM: DailyVerse refresh model (%u bytes)", static_cast<unsigned>(sizeof(DailyVerse)));
+    Storage.remove(DAILY_VERSE_TEMP_PATH);
+    return false;
+  }
+  if (!loadDailyVerseFile(DAILY_VERSE_TEMP_PATH, *refreshed)) {
+    Storage.remove(DAILY_VERSE_TEMP_PATH);
+    return false;
+  }
+
+  const bool hadCache = Storage.exists(DAILY_VERSE_CACHE_PATH);
+  const bool hadBackup = Storage.exists(DAILY_VERSE_BACKUP_PATH);
+  if (hadCache) {
+    // A leftover backup means the previous install was interrupted. Preserve
+    // that known fallback and discard only the cache file it supersedes.
+    const bool preserved = hadBackup ? Storage.remove(DAILY_VERSE_CACHE_PATH)
+                                     : Storage.rename(DAILY_VERSE_CACHE_PATH, DAILY_VERSE_BACKUP_PATH);
+    if (!preserved) {
+      LOG_ERR(LOG_TAG, "Could not preserve previous Daily verse cache");
+      Storage.remove(DAILY_VERSE_TEMP_PATH);
+      return false;
+    }
+  }
+  if (!Storage.rename(DAILY_VERSE_TEMP_PATH, DAILY_VERSE_CACHE_PATH)) {
+    LOG_ERR(LOG_TAG, "Could not install Daily verse cache");
+    if (Storage.exists(DAILY_VERSE_BACKUP_PATH)) {
+      Storage.rename(DAILY_VERSE_BACKUP_PATH, DAILY_VERSE_CACHE_PATH);
+    }
+    Storage.remove(DAILY_VERSE_TEMP_PATH);
+    return false;
+  }
+  if (Storage.exists(DAILY_VERSE_BACKUP_PATH)) Storage.remove(DAILY_VERSE_BACKUP_PATH);
+  verse = *refreshed;
+  return true;
+}
+
+bool BibleLibrary::loadDailyChapter(const DailyVerse& verse, const char* footnotesLabel,
+                                    std::unique_ptr<char[]>& text, size_t& textLength, size_t& textCapacity) {
+  text.reset();
+  textLength = 0;
+  textCapacity = 0;
+  if (!verse.valid || verse.text[0] == '\0') return false;
+
+  const size_t sourceLength = strlen(verse.text);
+  const size_t noteLength = strlen(verse.personalNote);
+  const size_t labelLength = footnotesLabel ? strlen(footnotesLabel) : 0;
+  const size_t capacity = sourceLength + noteLength + labelLength + 32;
+  auto dailyText = makeUniqueNoThrow<char[]>(capacity);
+  if (!dailyText) {
+    LOG_ERR(LOG_TAG, "OOM: Daily chapter buffer (%u bytes)", static_cast<unsigned>(capacity));
+    return false;
+  }
+
+  size_t input = 0;
+  size_t output = 0;
+  bool lineStart = true;
+  while (input < sourceLength) {
+    if (verse.text[input] == '\r') {
+      ++input;
+      continue;
+    }
+    if (lineStart && std::isdigit(static_cast<unsigned char>(verse.text[input]))) {
+      while (input < sourceLength && std::isdigit(static_cast<unsigned char>(verse.text[input]))) {
+        dailyText[output++] = verse.text[input++];
+      }
+      if (input < sourceLength && (verse.text[input] == ' ' || verse.text[input] == '\t')) {
+        dailyText[output++] = VERSE_NUMBER_END;
+        while (input < sourceLength && (verse.text[input] == ' ' || verse.text[input] == '\t')) ++input;
+      }
+      lineStart = false;
+      continue;
+    }
+    const char value = verse.text[input++];
+    dailyText[output++] = value;
+    lineStart = value == '\n';
+  }
+
+  if (noteLength > 0) {
+    const int written = snprintf(dailyText.get() + output, capacity - output, "\n\n%s\n[1] %s",
+                                 footnotesLabel ? footnotesLabel : "", verse.personalNote);
+    if (written > 0) output += std::min(static_cast<size_t>(written), capacity - output - 1);
+  }
+  dailyText[output] = '\0';
+  text = std::move(dailyText);
+  textLength = output;
+  textCapacity = capacity;
+  return true;
 }
 
 bool BibleLibrary::loadChapter(const VersionInfo& version, const BookInfo& book, const uint16_t chapter,

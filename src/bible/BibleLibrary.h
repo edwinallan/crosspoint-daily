@@ -8,7 +8,11 @@
 namespace bible {
 
 inline constexpr char BIBLE_ROOT[] = "/.bibles";
+inline constexpr char DAILY_API_BASE_URL[] = "https://my-daily.allan.ch/server";
+inline constexpr char DAILY_VERSE_URL[] = "https://my-daily.allan.ch/server/verse";
 inline constexpr char DAILY_VERSE_CACHE_PATH[] = "/.crosspoint/daily/verse.json";
+inline constexpr char DAILY_VERSE_BACKUP_PATH[] = "/.crosspoint/daily/verse.backup.json";
+inline constexpr char DAILY_VERSE_TEMP_PATH[] = "/.crosspoint/daily/verse.download.json";
 inline constexpr char DAILY_VERSE_FIXTURE_PATH[] = "/.bibles/verse.json";
 
 inline constexpr size_t MAX_VERSION_COUNT = 12;
@@ -38,10 +42,17 @@ struct DailyVerse {
   bool valid = false;
   char date[11]{};
   char reference[96]{};
+  char referenceBook[48]{};
+  uint16_t referenceChapter = 0;
+  uint16_t referenceVerseStart = 0;
+  uint16_t referenceVerseEnd = 0;
   char translationAbbreviation[16]{};
   char translationName[96]{};
   char translationLanguage[8]{};
   char text[2048]{};
+  uint8_t memorisationLevel = 0;
+  uint8_t memorisationScale = 0;
+  char personalNote[1024]{};
 };
 
 struct ChapterNote {
@@ -59,6 +70,12 @@ class BibleLibrary final {
   static bool loadAvailableChapters(const VersionInfo& version, const BookInfo& book,
                                     std::vector<uint16_t>& chapters);
   static bool loadDailyVerse(DailyVerse& verse);
+  static bool refreshDailyVerse(DailyVerse& verse);
+
+  // API excerpts are bounded by DailyVerse's fixed buffers. The returned
+  // allocation is held for the reader view and released when that view exits.
+  static bool loadDailyChapter(const DailyVerse& verse, const char* footnotesLabel,
+                               std::unique_ptr<char[]>& text, size_t& textLength, size_t& textCapacity);
 
   // Note text shares the returned chapter allocation; notes only retain bounded
   // offsets into it, avoiding a second chapter-sized allocation.
