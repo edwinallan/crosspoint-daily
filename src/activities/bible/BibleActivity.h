@@ -59,7 +59,11 @@ class BibleActivity final : public Activity {
   bool dailySelectionAvailable = false;
   bool dailyJumpPending = false;
   bool showingDailyApiText = false;
+  bool dailyVerseRefreshPending = false;
+  bool homeSelectionChanged = false;
+  bool homeFullRenderPending = true;
   int dailySourceVersionIndex = -1;
+  int renderedHomeBookIndex = 0;
   char dailyBookId[12]{};
   ReaderNoteMode readerNoteMode = ReaderNoteMode::Reading;
   std::array<bible::ChapterNote, bible::MAX_CHAPTER_NOTE_COUNT> chapterNotes{};
@@ -78,6 +82,7 @@ class BibleActivity final : public Activity {
   void handleChapterInput();
   void handleReaderInput();
   void renderHome();
+  void drawHomeBookCell(const Rect& bounds, int columns, int rows, int index, bool eraseFirst);
   void renderChapters();
   void renderReader();
 
@@ -103,6 +108,7 @@ class BibleActivity final : public Activity {
   int findVersionIndex(const char* abbreviation, const char* name) const;
   int findDailyBookIndex() const;
   void selectDailyContext();
+  void applyDailyVerseRefresh();
   bool isDailyBookAndChapter() const;
   bool shouldUseDailyApiText() const;
   bool findVerseOffset(uint16_t verse, size_t& offset) const;

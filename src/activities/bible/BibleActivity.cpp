@@ -112,12 +112,11 @@ void BibleActivity::onEnter() {
     selectDailyContext();
   }
 
-  // Paint the cache-backed screen before doing any network work. A live refresh
-  // is attempted only when another workflow has already connected Wi-Fi.
+  // Paint the cache-backed screen first. If another workflow has already
+  // connected Wi-Fi, refresh on a low-priority task so input remains responsive.
   requestUpdateAndWait();
-  if (WiFi.status() == WL_CONNECTED && bible::BibleLibrary::refreshDailyVerse(dailyVerse)) {
-    selectDailyContext();
-    requestUpdate();
+  if (WiFi.status() == WL_CONNECTED) {
+    dailyVerseRefreshPending = bible::BibleLibrary::startDailyVerseRefresh();
   }
 }
 
@@ -131,6 +130,7 @@ void BibleActivity::onExit() {
 }
 
 void BibleActivity::loop() {
+  applyDailyVerseRefresh();
   switch (view) {
     case View::Home:
       handleHomeInput();
@@ -144,10 +144,53 @@ void BibleActivity::loop() {
   }
 }
 
+void BibleActivity::applyDailyVerseRefresh() {
+  if (!dailyVerseRefreshPending) return;
+
+  switch (bible::BibleLibrary::dailyVerseRefreshStatus()) {
+    case bible::DailyVerseRefreshStatus::Idle:
+    case bible::DailyVerseRefreshStatus::Running:
+      return;
+    case bible::DailyVerseRefreshStatus::Failed:
+      dailyVerseRefreshPending = false;
+      return;
+    case bible::DailyVerseRefreshStatus::Succeeded:
+      dailyVerseRefreshPending = false;
+      break;
+  }
+
+  // A chapter already open must keep its source and page offsets stable. The
+  // newly cached verse is picked up next time Bible opens; only the visible
+  // cache-backed home screen is refreshed in-place.
+  if (view != View::Home) return;
+
+  {
+    RenderLock lock(*this);
+    homeFullRenderPending = true;
+    if (!bible::BibleLibrary::loadDailyVerse(dailyVerse)) return;
+    const int selectedVersionIndex = versionIndex;
+    char selectedBookId[sizeof(dailyBookId)]{};
+    if (homeSelectionChanged) {
+      const auto* selectedBook = currentBook();
+      if (selectedBook) snprintf(selectedBookId, sizeof(selectedBookId), "%s", selectedBook->id);
+    }
+    selectDailyContext();
+    if (homeSelectionChanged && selectedVersionIndex >= 0 &&
+        selectedVersionIndex < static_cast<int>(versions.size())) {
+      versionIndex = selectedVersionIndex;
+      bible::BibleLibrary::loadBooks(versions[versionIndex], books);
+      const int selectedBookIndex = findBookIndex(selectedBookId);
+      bookIndex = selectedBookIndex >= 0 ? selectedBookIndex : 0;
+    }
+  }
+  requestUpdate();
+}
+
 void BibleActivity::handleHomeInput() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (homeMode == HomeMode::Versions) {
       homeMode = HomeMode::Books;
+      homeFullRenderPending = true;
       requestUpdate();
       return;
     }
@@ -208,6 +251,7 @@ bool BibleActivity::handleHomeSelect() {
     homeMode = HomeMode::Versions;
     bookRepeatDirection = BookDirection::None;
     confirmLongHandled = true;
+    homeFullRenderPending = true;
     requestUpdate();
     return true;
   }
@@ -220,12 +264,14 @@ bool BibleActivity::handleHomeSelect() {
   if (homeMode == HomeMode::Books && mappedInput.getHeldTime() > VERSION_SELECT_LONG_PRESS_MS) {
     homeMode = HomeMode::Versions;
     bookRepeatDirection = BookDirection::None;
+    homeFullRenderPending = true;
     requestUpdate();
     return true;
   }
 
   if (homeMode == HomeMode::Versions) {
     homeMode = HomeMode::Books;
+    homeFullRenderPending = true;
     requestUpdate();
   } else if (!books.empty()) {
     enterChapters();
@@ -290,6 +336,7 @@ MappedInputManager::Button BibleActivity::buttonForBookDirection(const BookDirec
 void BibleActivity::moveHomeBook(const BookDirection direction) {
   if (books.empty() || direction == BookDirection::None) return;
 
+  RenderLock lock(*this);
   const int count = static_cast<int>(books.size());
   const int columns = std::min(BOOK_GRID_COLUMNS, count);
   const int previousIndex = bookIndex;
@@ -316,7 +363,11 @@ void BibleActivity::moveHomeBook(const BookDirection direction) {
       return;
   }
 
-  if (bookIndex != previousIndex) requestUpdate();
+  if (bookIndex != previousIndex) {
+    homeSelectionChanged = true;
+    lock.unlock();
+    requestUpdate();
+  }
 }
 
 bool BibleActivity::handleVersionNavigation() {
@@ -497,6 +548,7 @@ void BibleActivity::enterHome() {
     renderer.setOrientation(GfxRenderer::Orientation::Portrait);
     view = View::Home;
     homeMode = HomeMode::Books;
+    homeFullRenderPending = true;
     bookRepeatDirection = BookDirection::None;
     confirmLongHandled = false;
   }
@@ -757,7 +809,11 @@ void BibleActivity::switchVersion(const int direction) {
     RenderLock lock(*this);
     changed = switchVersionLocked(direction);
   }
-  if (changed) requestUpdate();
+  if (changed) {
+    homeFullRenderPending = true;
+    if (view == View::Home) homeSelectionChanged = true;
+    requestUpdate();
+  }
 }
 
 void BibleActivity::selectNearestChapter(const uint16_t preferredChapter) {
@@ -1083,18 +1139,43 @@ void BibleActivity::render(RenderLock&&) {
 }
 
 void BibleActivity::renderHome() {
-  renderer.clearScreen();
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
   const auto* version = currentVersion();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BIBLE),
-                 version ? version->displayName : nullptr);
-
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
   const int contentHeight = std::max(1, contentBottom - contentTop);
   const int verseHeight = contentHeight * 7 / 10;
+  const int selectorTop = contentTop + verseHeight;
+  const int selectorHeaderTop = selectorTop + metrics.verticalSpacing;
+  const int bookTop = selectorHeaderTop + metrics.headerHeight;
+  const Rect bookBounds{metrics.contentSidePadding, bookTop, pageWidth - metrics.contentSidePadding * 2,
+                        std::max(1, contentBottom - bookTop)};
+  const auto* book = currentBook();
+
+  const int bookCount = static_cast<int>(books.size());
+  const int columns = bookCount > 0 ? std::min(BOOK_GRID_COLUMNS, bookCount) : 0;
+  const int rows = columns > 0 ? (bookCount + columns - 1) / columns : 0;
+  const bool selectionOnly = !homeFullRenderPending && renderedHomeBookIndex != bookIndex &&
+                             renderedHomeBookIndex >= 0 && renderedHomeBookIndex < bookCount && bookIndex >= 0 &&
+                             bookIndex < bookCount;
+  homeFullRenderPending = false;
+
+  if (selectionOnly) {
+    renderer.fillRect(0, selectorHeaderTop, pageWidth, metrics.headerHeight, false);
+    GUI.drawSubHeader(renderer, Rect{0, selectorHeaderTop, pageWidth, metrics.headerHeight},
+                      book ? book->name : tr(STR_BOOK), version ? version->id : nullptr);
+    drawHomeBookCell(bookBounds, columns, rows, renderedHomeBookIndex, true);
+    if (bookIndex != renderedHomeBookIndex) drawHomeBookCell(bookBounds, columns, rows, bookIndex, true);
+    renderedHomeBookIndex = bookIndex;
+    renderer.displayBuffer();
+    return;
+  }
+
+  renderer.clearScreen();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_BIBLE),
+                 version ? version->displayName : nullptr);
   GUI.drawSubHeader(renderer, Rect{0, contentTop, pageWidth, metrics.headerHeight}, tr(STR_BIBLE_DAILY_VERSE));
 
   const int verseTextTop = contentTop + metrics.headerHeight;
@@ -1120,10 +1201,7 @@ void BibleActivity::renderHome() {
     UITheme::drawCenteredWrappedText(renderer, verseBounds, UI_12_FONT_ID, tr(STR_BIBLE_DAILY_VERSE_UNAVAILABLE), 3);
   }
 
-  const int selectorTop = contentTop + verseHeight;
   renderer.drawLine(metrics.contentSidePadding, selectorTop, pageWidth - metrics.contentSidePadding, selectorTop);
-  const auto* book = currentBook();
-  const int selectorHeaderTop = selectorTop + metrics.verticalSpacing;
   GUI.drawSubHeader(renderer, Rect{0, selectorHeaderTop, pageWidth, metrics.headerHeight},
                     book ? book->name : tr(STR_BOOK),
                     version && homeMode == HomeMode::Books ? version->id : nullptr);
@@ -1139,38 +1217,9 @@ void BibleActivity::renderHome() {
     renderer.drawText(SMALL_FONT_ID, badgeX + badgePadding, badgeY + badgePadding, version->id, false);
   }
 
-  const int bookTop = selectorHeaderTop + metrics.headerHeight;
-  const Rect bookBounds{metrics.contentSidePadding, bookTop, pageWidth - metrics.contentSidePadding * 2,
-                        std::max(1, contentBottom - bookTop)};
   if (book) {
-    const int bookCount = static_cast<int>(books.size());
-    const int columns = std::min(BOOK_GRID_COLUMNS, bookCount);
-    const int rows = (bookCount + columns - 1) / columns;
-    const int cellWidth = std::max(1, bookBounds.width / columns);
-    const int cellHeight = std::max(1, bookBounds.height / rows);
-    const int labelHeight = renderer.getLineHeight(SMALL_FONT_ID);
-
     for (int index = 0; index < bookCount; ++index) {
-      const int column = index % columns;
-      const int row = index / columns;
-      const int cellX = bookBounds.x + column * cellWidth;
-      const int cellY = bookBounds.y + row * cellHeight;
-      const int cellRight = column + 1 == columns ? bookBounds.x + bookBounds.width : cellX + cellWidth;
-      const int cellBottom = row + 1 == rows ? bookBounds.y + bookBounds.height : cellY + cellHeight;
-      const int width = cellRight - cellX;
-      const int height = cellBottom - cellY;
-      const bool selected = index == bookIndex;
-      if (selected) {
-        renderer.fillRect(cellX, cellY, width, height, true);
-      } else {
-        renderer.drawRect(cellX, cellY, width, height, true);
-      }
-
-      char label[5]{};
-      snprintf(label, sizeof(label), "%.4s", books[index].id);
-      const int labelWidth = renderer.getTextWidth(SMALL_FONT_ID, label);
-      renderer.drawText(SMALL_FONT_ID, cellX + std::max(0, (width - labelWidth) / 2),
-                        cellY + std::max(0, (height - labelHeight) / 2), label, !selected);
+      drawHomeBookCell(bookBounds, columns, rows, index, false);
     }
   } else {
     const char* message = versions.empty() ? tr(STR_BIBLE_NO_VERSIONS) : tr(STR_BIBLE_NO_BOOKS);
@@ -1179,7 +1228,39 @@ void BibleActivity::renderHome() {
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  renderedHomeBookIndex = bookIndex;
   renderer.displayBuffer();
+}
+
+void BibleActivity::drawHomeBookCell(const Rect& bounds, const int columns, const int rows, const int index,
+                                     const bool eraseFirst) {
+  if (columns <= 0 || rows <= 0 || index < 0 || index >= static_cast<int>(books.size())) return;
+
+  const int cellWidth = std::max(1, bounds.width / columns);
+  const int cellHeight = std::max(1, bounds.height / rows);
+  const int column = index % columns;
+  const int row = index / columns;
+  const int cellX = bounds.x + column * cellWidth;
+  const int cellY = bounds.y + row * cellHeight;
+  const int cellRight = column + 1 == columns ? bounds.x + bounds.width : cellX + cellWidth;
+  const int cellBottom = row + 1 == rows ? bounds.y + bounds.height : cellY + cellHeight;
+  const int width = cellRight - cellX;
+  const int height = cellBottom - cellY;
+  const bool selected = index == bookIndex;
+
+  if (eraseFirst) renderer.fillRect(cellX, cellY, width, height, false);
+  if (selected) {
+    renderer.fillRect(cellX, cellY, width, height, true);
+  } else {
+    renderer.drawRect(cellX, cellY, width, height, true);
+  }
+
+  char label[5]{};
+  snprintf(label, sizeof(label), "%.4s", books[index].id);
+  const int labelWidth = renderer.getTextWidth(SMALL_FONT_ID, label);
+  const int labelHeight = renderer.getLineHeight(SMALL_FONT_ID);
+  renderer.drawText(SMALL_FONT_ID, cellX + std::max(0, (width - labelWidth) / 2),
+                    cellY + std::max(0, (height - labelHeight) / 2), label, !selected);
 }
 
 void BibleActivity::drawMemorisationGauge(const int pageWidth, const int y) {
