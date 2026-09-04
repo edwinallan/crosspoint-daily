@@ -18,7 +18,7 @@ When the device starts or a Daily screen opens:
 
 The user starts refresh manually with the **Sync** button on the homepage. Sync
 connects to the first available saved Wi-Fi network, shows a loading screen,
-then fetches `/verse`, `/calendar`, and `/focus`. Validate and cache each
+then fetches `/verses`, `/calendar`, and `/focus`. Validate and cache each
 response independently, and keep the previous cache when a request fails.
 
 ## Server configuration
@@ -47,7 +47,7 @@ The saved Settings value overrides the compiled default.
 Endpoints:
 
 ```text
-GET  {baseUrl}/verse
+GET  {baseUrl}/verses
 GET  {baseUrl}/calendar
 GET  {baseUrl}/focus
 POST {baseUrl}/tasks/{taskId}
@@ -57,7 +57,7 @@ Use Bearer authentication for every request to the exact
 `my-daily.allan.ch` host. Never forward that header across a redirect to a
 different host. The token is a local secret and must not be committed to the
 repository. The three GET requests
-are independent: `/verse` returns only the current daily Bible verse as JSON,
+are independent: `/verses` returns all saved Bible verses as JSON,
 while `/calendar` returns the complete calendar and task JSON for the next
 five months, not only today's events, and `/focus` returns the timetable that
 controls which calendars are visible at each time.
@@ -162,10 +162,13 @@ The API update may happen immediately or remain queued until Wi-Fi is available.
 
 ## Bible
 
-The verse of the day is supplied by the `/verse` API. Use the returned
-`verse.text` directly for the daily verse text, `verse.reference` for its
-reference, and `verse.translation` for the displayed translation. Cache the
-validated API response so the verse of the day remains available offline.
+The displayed verse is selected from the `/verses` API. If one verse has
+`is_sticky: true`, select it by default. Otherwise choose randomly with inverse
+linear weighting by memorisation level, so every verse remains eligible while
+lower-memorised verses appear more often. Use the selected verse's `text`
+directly, its `reference` for the reference, and its `translation` for the
+displayed translation. Cache the validated API response and selected index so
+all verses remain available offline and the default selection remains stable.
 
 The verse of the day must not depend on a matching local Bible version or
 chapter file. Local Bible text and notes on the SD card are used only by the
@@ -182,6 +185,15 @@ Approximately 70% of the screen displays:
 The lower part of the screen contains a Bible-book selector.
 
 Use Left and Right to select a book and Confirm to open it.
+
+Long-press the side previous and next buttons to show the previous or next
+verse in API order. Navigation wraps at both ends. A short press retains the
+normal Bible-book navigation behavior.
+
+Changing the displayed API verse selects its book in the mosaic and makes its
+chapter the default in the chapter selector, so two Confirm presses open the
+referenced verse. This targeting must not change the active local Bible
+version; versions change only through the version selector.
 
 When the daily reference can be resolved against the selected manifest, start
 with that book selected. Opening it starts with the referenced chapter selected,
@@ -214,10 +226,9 @@ Bible versions must be detected from the files available on the SD card rather t
 
 If the API translation abbreviation does not match a detected local version,
 treat it as a custom version and show the API text for the referenced
-chapter or excerpt. If the API translation name ends in ` Modified`, remove
-that suffix from both the name and abbreviation when resolving the local source
-version. Continue to display the custom API text for the daily excerpt, but use
-the resolved source version for adjacent chapters and normal Bible navigation.
+chapter or excerpt. Continue to display the custom API text for the daily
+excerpt, but keep the user's active local Bible version for adjacent chapters
+and normal Bible navigation.
 
 When `verse.notes.personal` contains text, append it as a footnote after the
 custom API excerpt. Local `<CHAPTER>.notes.json` notes retain their existing
@@ -291,13 +302,12 @@ Do not bundle copyrighted Bible text in the public repository unless redistribut
 
 ## Verse and calendar JSON
 
-`/verse` JSON structure:
+`/verses` JSON structure:
 
 ```json
 {
   "success": true,
-  "date": "2026-08-02",
-  "verse": {
+  "verses": [{
     "id": 1,
     "reference": "Genèse 2:5",
     "translation": {
@@ -318,16 +328,18 @@ Do not bundle copyrighted Bible text in the public repository unless redistribut
           "verse": "5"
         }
       ]
-    }
-  }
+    },
+    "is_sticky": false
+  }]
 }
 ```
 
-A valid daily verse response requires `success` to be `true` and must contain
-`date`, a parseable `verse.reference`, `verse.translation.abbreviation`,
-`verse.translation.name`, `verse.translation.language`, and non-empty
-`verse.text`. References use the form `<book> <chapter>:<verse>` or
-`<book> <chapter>:<first>-<last>`. The Daily screens display the cached `verse.text` without
+A valid verses response requires `success` to be `true`, a non-empty `verses`
+array, and for every item a parseable `reference`, `translation.abbreviation`,
+`translation.name`, `translation.language`, and non-empty `text`. At most one
+item may have boolean `is_sticky` set to true. References use the form
+`<book> <chapter>:<verse>` or `<book> <chapter>:<first>-<last>`. The Daily
+screens display the selected cached verse's `text` without
 resolving or replacing it from local Bible files. Memorisation data and notes
 are cached when present. Oversized display text and personal notes are safely
 truncated to their fixed firmware buffers.
@@ -424,7 +436,8 @@ Group these items by calendar and apply the currently matching `/focus`
 rule before rendering them. Use cached data only. Do not delay shutdown while
 waiting for a network request.
 
-If no valid cached daily verse response with non-empty `verse.text` exists,
+If no valid cached verses response with a selected item containing non-empty
+`text` exists,
 render a white screen with this text centered on the display instead of the
 normal CrossPoint sleep screen:
 

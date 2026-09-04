@@ -29,6 +29,7 @@ class BibleActivity final : public Activity {
   static constexpr unsigned long BOOK_REPEAT_INTERVAL_MS = 150;
   static constexpr unsigned long VERSION_SELECT_LONG_PRESS_MS = 600;
   static constexpr unsigned long NOTE_SELECT_LONG_PRESS_MS = 600;
+  static constexpr unsigned long DAILY_VERSE_LONG_PRESS_MS = 600;
 
   View view = View::Home;
   HomeMode homeMode = HomeMode::Books;
@@ -37,6 +38,8 @@ class BibleActivity final : public Activity {
   std::vector<uint16_t> chapters;
   std::vector<size_t> pageOffsets;
   bible::DailyVerse dailyVerse;
+  uint16_t dailyVerseIndex = 0;
+  uint16_t dailyVerseCount = 0;
 
   int versionIndex = 0;
   int bookIndex = 0;
@@ -54,6 +57,7 @@ class BibleActivity final : public Activity {
 
   bool readerLoadFailed = false;
   bool confirmLongHandled = false;
+  bool dailyVerseLongHandled = false;
   bool readerConfirmLongHandled = false;
   bool dailyTranslationCustom = false;
   bool dailySelectionAvailable = false;
@@ -91,9 +95,11 @@ class BibleActivity final : public Activity {
   void openReader();
   void releaseChapter();
   bool handleHomeSelect();
+  bool handleDailyVerseNavigation();
   bool handleRepeatedBookNavigation();
   bool handleVersionNavigation();
   void moveHomeBook(BookDirection direction);
+  void moveDailyVerse(int direction);
   MappedInputManager::Button buttonForBookDirection(BookDirection direction) const;
   void changeChapterBook(int direction);
   bool switchVersionLocked(int direction);
@@ -107,7 +113,7 @@ class BibleActivity final : public Activity {
   int findBookIndex(const char* bookId) const;
   int findVersionIndex(const char* abbreviation, const char* name) const;
   int findDailyBookIndex() const;
-  void selectDailyContext(bool preferDailyVersion);
+  void selectDailyContext();
   void restoreSleepPosition();
   bool isDailyBookAndChapter() const;
   bool shouldUseDailyApiText() const;

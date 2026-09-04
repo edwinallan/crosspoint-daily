@@ -5,12 +5,12 @@
 #include <I18n.h>
 #include <I18nKeys.h>
 #include <Logging.h>
+#include <strings.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
-#include <strings.h>
 #include <string>
 
 #include "CrossPointSettings.h"
@@ -94,13 +94,15 @@ uint16_t BibleActivity::currentChapter() const {
 void BibleActivity::onEnter() {
   Activity::onEnter();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  const unsigned long openStartedAt = millis();
 
   versions.reserve(bible::MAX_VERSION_COUNT);
   books.reserve(bible::MAX_BOOK_COUNT);
   chapters.reserve(bible::MAX_CHAPTER_COUNT);
   pageOffsets.reserve(bible::MAX_PAGE_COUNT);
 
-  bible::BibleLibrary::loadDailyVerse(dailyVerse);
+  bible::BibleLibrary::loadDailyVerse(dailyVerse, &dailyVerseIndex, &dailyVerseCount);
+  const unsigned long dailyVerseLoadedAt = millis();
   if (bible::BibleLibrary::discoverVersions(versions)) {
     const char* uiLanguage = LANGUAGE_CODES[static_cast<size_t>(I18N.getLanguage())];
     for (size_t i = 0; i < versions.size(); ++i) {
@@ -111,9 +113,12 @@ void BibleActivity::onEnter() {
     }
     const int rememberedVersion = findVersionIndex(APP_STATE.bibleResumeVersion, nullptr);
     if (rememberedVersion >= 0) versionIndex = rememberedVersion;
-    selectDailyContext(rememberedVersion < 0);
+    selectDailyContext();
     if (resumeFromSleep) restoreSleepPosition();
   }
+
+  LOG_DBG(LOG_TAG, "Open preparation: verse=%lums manifests=%lums total=%lums", dailyVerseLoadedAt - openStartedAt,
+          millis() - dailyVerseLoadedAt, millis() - openStartedAt);
 
   // Bible opening is deliberately cache-only. Daily data is refreshed by the
   // explicit Sync action on Home so entering the reader never waits on Wi-Fi.
@@ -135,8 +140,7 @@ void BibleActivity::onBeforeSleep() {
 
   const auto* version = currentVersion();
   const auto* book = currentBook();
-  snprintf(APP_STATE.bibleResumeVersion, sizeof(APP_STATE.bibleResumeVersion), "%s",
-           version ? version->directory : "");
+  snprintf(APP_STATE.bibleResumeVersion, sizeof(APP_STATE.bibleResumeVersion), "%s", version ? version->directory : "");
   snprintf(APP_STATE.bibleResumeBook, sizeof(APP_STATE.bibleResumeBook), "%s", book ? book->id : "");
   APP_STATE.bibleResumeChapter = currentChapter();
   APP_STATE.bibleResumePage = static_cast<uint16_t>(std::max(currentPage, 0));
@@ -186,8 +190,9 @@ void BibleActivity::handleHomeInput() {
 
   if (homeMode == HomeMode::Versions) {
     if (handleVersionNavigation()) return;
-  } else if (handleRepeatedBookNavigation()) {
-    return;
+  } else {
+    if (handleDailyVerseNavigation()) return;
+    if (handleRepeatedBookNavigation()) return;
   }
 
   const auto swipe = mappedInput.wasSwipe();
@@ -226,6 +231,40 @@ void BibleActivity::handleHomeInput() {
                                renderer.getScreenHeight() - selectorTop - metrics.buttonHintsHeight)) {
     enterChapters();
   }
+}
+
+bool BibleActivity::handleDailyVerseNavigation() {
+  int direction = 0;
+  if (mappedInput.isPressed(MappedInputManager::Button::PageBack)) {
+    direction = -1;
+  } else if (mappedInput.isPressed(MappedInputManager::Button::PageForward)) {
+    direction = 1;
+  }
+
+  if (!dailyVerseLongHandled && direction != 0 && dailyVerseCount > 1 &&
+      mappedInput.getHeldTime() >= DAILY_VERSE_LONG_PRESS_MS) {
+    dailyVerseLongHandled = true;
+    moveDailyVerse(direction);
+    return true;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::PageBack)) {
+    if (dailyVerseLongHandled) {
+      dailyVerseLongHandled = false;
+    } else {
+      moveHomeBook(BookDirection::Left);
+    }
+    return true;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::PageForward)) {
+    if (dailyVerseLongHandled) {
+      dailyVerseLongHandled = false;
+    } else {
+      moveHomeBook(BookDirection::Right);
+    }
+    return true;
+  }
+  return false;
 }
 
 bool BibleActivity::handleHomeSelect() {
@@ -267,11 +306,7 @@ bool BibleActivity::handleRepeatedBookNavigation() {
   if (books.empty()) return false;
 
   BookDirection pressedDirection = BookDirection::None;
-  if (mappedInput.wasPressed(MappedInputManager::Button::PageBack)) {
-    pressedDirection = BookDirection::Left;
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::PageForward)) {
-    pressedDirection = BookDirection::Right;
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
     pressedDirection = BookDirection::Up;
   } else if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
     pressedDirection = BookDirection::Down;
@@ -299,6 +334,28 @@ bool BibleActivity::handleRepeatedBookNavigation() {
   lastBookRepeatMs = now;
   moveHomeBook(bookRepeatDirection);
   return true;
+}
+
+void BibleActivity::moveDailyVerse(const int direction) {
+  if (dailyVerseCount < 2 || direction == 0) return;
+
+  const uint16_t target = static_cast<uint16_t>(
+      wrappedIndex(static_cast<int>(dailyVerseIndex) + direction, static_cast<int>(dailyVerseCount)));
+  uint16_t refreshedCount = dailyVerseCount;
+  bool loaded = false;
+  {
+    RenderLock lock(*this);
+    loaded = bible::BibleLibrary::loadDailyVerseAt(target, dailyVerse, &refreshedCount);
+    if (loaded) {
+      dailyVerseIndex = target;
+      dailyVerseCount = refreshedCount;
+      selectDailyContext();
+      bookRepeatDirection = BookDirection::None;
+      homeFullRenderPending = true;
+      homeSelectionChanged = true;
+    }
+  }
+  if (loaded) requestUpdate();
 }
 
 MappedInputManager::Button BibleActivity::buttonForBookDirection(const BookDirection direction) const {
@@ -399,7 +456,8 @@ void BibleActivity::handleChapterInput() {
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + metrics.headerHeight;
-  const int contentHeight = renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int contentHeight =
+      renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
   switch (handleListTouch(chapterIndex, static_cast<int>(chapters.size()), contentTop, contentHeight, false)) {
     case ListTouchResult::Activated:
       if (!chapters.empty()) openReader();
@@ -488,13 +546,11 @@ void BibleActivity::handleReaderInput() {
   }
 
   const bool swapFront = mappedInput.isNavDirectionSwapped();
-  const auto previousFrontButton =
-      swapFront ? MappedInputManager::Button::Right : MappedInputManager::Button::Left;
+  const auto previousFrontButton = swapFront ? MappedInputManager::Button::Right : MappedInputManager::Button::Left;
   const auto nextFrontButton = swapFront ? MappedInputManager::Button::Left : MappedInputManager::Button::Right;
 
   if (readerNoteMode == ReaderNoteMode::Selecting) {
-    if (mappedInput.wasReleased(previousFrontButton) ||
-        mappedInput.wasReleased(MappedInputManager::Button::PageBack)) {
+    if (mappedInput.wasReleased(previousFrontButton) || mappedInput.wasReleased(MappedInputManager::Button::PageBack)) {
       moveSelectedNote(-1);
     } else if (mappedInput.wasReleased(nextFrontButton) ||
                mappedInput.wasReleased(MappedInputManager::Button::PageForward)) {
@@ -535,6 +591,7 @@ void BibleActivity::enterHome() {
     homeFullRenderPending = true;
     bookRepeatDirection = BookDirection::None;
     confirmLongHandled = false;
+    dailyVerseLongHandled = false;
   }
   requestUpdate();
 }
@@ -544,8 +601,7 @@ void BibleActivity::enterChapters() {
     RenderLock lock(*this);
     uint16_t preferredChapter = currentChapter();
     const auto* selectedBook = currentBook();
-    if (preferredChapter == 0 && dailySelectionAvailable && selectedBook &&
-        strcmp(selectedBook->id, dailyBookId) == 0) {
+    if (dailyJumpPending && dailySelectionAvailable && selectedBook && strcmp(selectedBook->id, dailyBookId) == 0) {
       preferredChapter = dailyVerse.referenceChapter;
     }
     releaseChapter();
@@ -598,8 +654,8 @@ int BibleActivity::findBookIndex(const char* bookId) const {
 int BibleActivity::findVersionIndex(const char* abbreviation, const char* name) const {
   for (size_t i = 0; i < versions.size(); ++i) {
     const auto& version = versions[i];
-    if ((abbreviation && (equalsIgnoreCase(version.id, abbreviation) ||
-                          equalsIgnoreCase(version.directory, abbreviation))) ||
+    if ((abbreviation &&
+         (equalsIgnoreCase(version.id, abbreviation) || equalsIgnoreCase(version.directory, abbreviation))) ||
         (name && equalsIgnoreCase(version.displayName, name))) {
       return static_cast<int>(i);
     }
@@ -615,10 +671,37 @@ int BibleActivity::findDailyBookIndex() const {
       return static_cast<int>(i);
     }
   }
+
+  // Book names in API references follow the API translation and can differ
+  // from the active version's language. Resolve the name in the source
+  // manifest, then use its canonical ID in the active version.
+  int sourceVersion = findVersionIndex(dailyVerse.translationAbbreviation, nullptr);
+  if (sourceVersion < 0 && endsWithIgnoreCase(dailyVerse.translationName, " Modified")) {
+    char sourceAbbreviation[sizeof(dailyVerse.translationAbbreviation)]{};
+    char sourceName[sizeof(dailyVerse.translationName)]{};
+    copyWithoutSuffix(sourceAbbreviation, sizeof(sourceAbbreviation), dailyVerse.translationAbbreviation, " Modified");
+    copyWithoutSuffix(sourceName, sizeof(sourceName), dailyVerse.translationName, " Modified");
+    sourceVersion = findVersionIndex(sourceAbbreviation, sourceName);
+  }
+
+  bible::BookInfo sourceBook{};
+  if (sourceVersion >= 0 &&
+      bible::BibleLibrary::findBookByName(versions[sourceVersion], dailyVerse.referenceBook, sourceBook)) {
+    return findBookIndex(sourceBook.id);
+  }
+
+  // If the API translation is not installed, another manifest may still use
+  // the same reference language and provide the canonical ID.
+  for (size_t i = 0; i < versions.size(); ++i) {
+    if (static_cast<int>(i) == sourceVersion) continue;
+    if (bible::BibleLibrary::findBookByName(versions[i], dailyVerse.referenceBook, sourceBook)) {
+      return findBookIndex(sourceBook.id);
+    }
+  }
   return -1;
 }
 
-void BibleActivity::selectDailyContext(const bool preferDailyVersion) {
+void BibleActivity::selectDailyContext() {
   dailyTranslationCustom = false;
   dailySelectionAvailable = false;
   dailyJumpPending = false;
@@ -629,63 +712,20 @@ void BibleActivity::selectDailyContext(const bool preferDailyVersion) {
     return;
   }
 
-  int selectedVersion = versionIndex >= 0 && versionIndex < static_cast<int>(versions.size()) ? versionIndex : 0;
+  // The displayed API verse may change the selected book/chapter, but never
+  // the user's Bible version. Version changes happen only through the version
+  // selector.
+  if (versionIndex < 0 || versionIndex >= static_cast<int>(versions.size())) versionIndex = 0;
   if (dailyVerse.valid) {
     // The API abbreviation is the identity boundary: a display-name match alone
     // does not turn a custom translation into a local one.
     const int exact = findVersionIndex(dailyVerse.translationAbbreviation, nullptr);
-    if (exact >= 0) {
-      if (preferDailyVersion) selectedVersion = exact;
-    } else {
-      dailyTranslationCustom = true;
-      if (endsWithIgnoreCase(dailyVerse.translationName, " Modified")) {
-        char sourceAbbreviation[sizeof(dailyVerse.translationAbbreviation)]{};
-        char sourceName[sizeof(dailyVerse.translationName)]{};
-        copyWithoutSuffix(sourceAbbreviation, sizeof(sourceAbbreviation), dailyVerse.translationAbbreviation,
-                          " Modified");
-        copyWithoutSuffix(sourceName, sizeof(sourceName), dailyVerse.translationName, " Modified");
-        const int source = findVersionIndex(sourceAbbreviation, sourceName);
-        if (preferDailyVersion && source >= 0) selectedVersion = source;
-      }
-      if (preferDailyVersion &&
-          (selectedVersion < 0 || selectedVersion >= static_cast<int>(versions.size()) ||
-           !equalsIgnoreCase(versions[selectedVersion].language, dailyVerse.translationLanguage))) {
-        for (size_t i = 0; i < versions.size(); ++i) {
-          if (equalsIgnoreCase(versions[i].language, dailyVerse.translationLanguage)) {
-            selectedVersion = static_cast<int>(i);
-            break;
-          }
-        }
-      }
-    }
+    dailyTranslationCustom = exact < 0;
   }
 
-  versionIndex = selectedVersion;
   if (!bible::BibleLibrary::loadBooks(versions[versionIndex], books)) return;
   bookIndex = 0;
-  int dailyBook = findDailyBookIndex();
-
-  // A version can omit books. Search the other detected versions in the same
-  // language, preserving the Daily translation/source preference when possible.
-  if (dailyVerse.valid && dailyBook < 0) {
-    const int preferredVersion = versionIndex;
-    for (size_t i = 0; i < versions.size(); ++i) {
-      if (static_cast<int>(i) == preferredVersion ||
-          !equalsIgnoreCase(versions[i].language, versions[preferredVersion].language)) {
-        continue;
-      }
-      if (!bible::BibleLibrary::loadBooks(versions[i], books)) continue;
-      dailyBook = findDailyBookIndex();
-      if (dailyBook >= 0) {
-        versionIndex = static_cast<int>(i);
-        break;
-      }
-    }
-    if (dailyBook < 0) {
-      versionIndex = preferredVersion;
-      bible::BibleLibrary::loadBooks(versions[versionIndex], books);
-    }
-  }
+  const int dailyBook = findDailyBookIndex();
 
   if (dailyBook < 0 || dailyVerse.referenceChapter == 0 || dailyVerse.referenceVerseStart == 0) return;
   bookIndex = dailyBook;
@@ -756,8 +796,8 @@ bool BibleActivity::findVerseOffset(const uint16_t verse, size_t& offset) const 
       offset = lineStart;
       return true;
     }
-    const char* newline = static_cast<const char*>(
-        memchr(chapterText.get() + lineStart, '\n', chapterTextLength - lineStart));
+    const char* newline =
+        static_cast<const char*>(memchr(chapterText.get() + lineStart, '\n', chapterTextLength - lineStart));
     if (!newline) break;
     lineStart = static_cast<size_t>(newline - chapterText.get()) + 1;
   }
@@ -867,7 +907,7 @@ bool BibleActivity::loadReaderChapterLocked() {
   showingDailyApiText = shouldUseDailyApiText();
   const bool loaded = showingDailyApiText
                           ? bible::BibleLibrary::loadDailyChapter(dailyVerse, tr(STR_BIBLE_NOTES), chapterText,
-                                                                 chapterTextLength, chapterTextCapacity)
+                                                                  chapterTextLength, chapterTextCapacity)
                           : bible::BibleLibrary::loadChapter(*version, *book, chapter, chapterText, chapterTextLength,
                                                              chapterTextCapacity, chapterNotes.data(),
                                                              chapterNotes.size(), chapterNoteCount);
@@ -1115,8 +1155,7 @@ void BibleActivity::buildPageIndex() {
   viewportTop = marginTop + screenMargin + renderer.getLineHeight(SMALL_FONT_ID);
   viewportWidth = renderer.getScreenWidth() - marginLeft - marginRight - screenMargin * 2;
   const int bottomReservation = std::max(screenMargin, UITheme::getInstance().getStatusBarHeight());
-  const int viewportHeight =
-      renderer.getScreenHeight() - viewportTop - marginBottom - bottomReservation;
+  const int viewportHeight = renderer.getScreenHeight() - viewportTop - marginBottom - bottomReservation;
   const int lineHeight = renderer.getLineHeight(readerFontId);
   linesPerPage = std::max(1, viewportHeight / std::max(1, lineHeight));
 
@@ -1204,10 +1243,9 @@ void BibleActivity::renderHome() {
   GUI.drawSubHeader(renderer, Rect{0, contentTop, pageWidth, metrics.headerHeight}, tr(STR_BIBLE_DAILY_VERSE));
 
   const int verseTextTop = contentTop + metrics.headerHeight;
-  const int verseFooterHeight = renderer.getLineHeight(UI_12_FONT_ID) + renderer.getLineHeight(SMALL_FONT_ID) +
-                                metrics.verticalSpacing;
-  const Rect verseBounds{metrics.contentSidePadding, verseTextTop,
-                         pageWidth - metrics.contentSidePadding * 2,
+  const int verseFooterHeight =
+      renderer.getLineHeight(UI_12_FONT_ID) + renderer.getLineHeight(SMALL_FONT_ID) + metrics.verticalSpacing;
+  const Rect verseBounds{metrics.contentSidePadding, verseTextTop, pageWidth - metrics.contentSidePadding * 2,
                          std::max(1, verseHeight - metrics.headerHeight - verseFooterHeight)};
   if (dailyVerse.valid) {
     UITheme::drawCenteredWrappedText(renderer, verseBounds, UI_12_FONT_ID, dailyVerse.text,
@@ -1216,20 +1254,17 @@ void BibleActivity::renderHome() {
     UITheme::drawCenteredText(renderer, Rect{0, 0, pageWidth, pageHeight}, UI_12_FONT_ID,
                               contentTop + verseHeight - verseFooterHeight, dailyVerse.reference, true,
                               EpdFontFamily::BOLD);
-    snprintf(lineBuffer, sizeof(lineBuffer), "%s (%s)", dailyVerse.translationName,
-             dailyVerse.translationAbbreviation);
+    snprintf(lineBuffer, sizeof(lineBuffer), "%s (%s)", dailyVerse.translationName, dailyVerse.translationAbbreviation);
     UITheme::drawCenteredText(renderer, Rect{0, 0, pageWidth, pageHeight}, SMALL_FONT_ID,
                               contentTop + verseHeight - renderer.getLineHeight(SMALL_FONT_ID), lineBuffer);
-    drawMemorisationGauge(pageWidth,
-                          contentTop + verseHeight - renderer.getLineHeight(SMALL_FONT_ID));
+    drawMemorisationGauge(pageWidth, contentTop + verseHeight - renderer.getLineHeight(SMALL_FONT_ID));
   } else {
     UITheme::drawCenteredWrappedText(renderer, verseBounds, UI_12_FONT_ID, tr(STR_BIBLE_DAILY_VERSE_UNAVAILABLE), 3);
   }
 
   renderer.drawLine(metrics.contentSidePadding, selectorTop, pageWidth - metrics.contentSidePadding, selectorTop);
   GUI.drawSubHeader(renderer, Rect{0, selectorHeaderTop, pageWidth, metrics.headerHeight},
-                    book ? book->name : tr(STR_BOOK),
-                    version && homeMode == HomeMode::Books ? version->id : nullptr);
+                    book ? book->name : tr(STR_BOOK), version && homeMode == HomeMode::Books ? version->id : nullptr);
   if (version && homeMode == HomeMode::Versions) {
     const int badgePadding = std::max(2, metrics.verticalSpacing / 4);
     const int badgeTextWidth = renderer.getTextWidth(SMALL_FONT_ID, version->id);
@@ -1326,9 +1361,10 @@ void BibleActivity::renderChapters() {
   const int contentTop = subHeaderTop + metrics.headerHeight;
   const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
   if (chapters.empty()) {
-    UITheme::drawCenteredWrappedText(renderer, Rect{metrics.contentSidePadding, contentTop,
-                                                     pageWidth - metrics.contentSidePadding * 2, contentHeight},
-                                     UI_12_FONT_ID, tr(STR_NO_CHAPTERS), 3);
+    UITheme::drawCenteredWrappedText(
+        renderer,
+        Rect{metrics.contentSidePadding, contentTop, pageWidth - metrics.contentSidePadding * 2, contentHeight},
+        UI_12_FONT_ID, tr(STR_NO_CHAPTERS), 3);
   } else {
     GUI.drawList(renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(chapters.size()),
                  chapterIndex, [this](const int index) {
@@ -1403,13 +1439,13 @@ void BibleActivity::drawNotePopup() {
   const int frame = std::max(1, metrics.popupFrameThickness);
   const int radius = std::max(4, metrics.popupCornerRadius);
   renderer.fillRoundedRect(x, y, width, height, radius, Color::Black);
-  renderer.fillRoundedRect(x + frame, y + frame, width - frame * 2, height - frame * 2,
-                           std::max(1, radius - frame), Color::White);
+  renderer.fillRoundedRect(x + frame, y + frame, width - frame * 2, height - frame * 2, std::max(1, radius - frame),
+                           Color::White);
 
   const auto& note = chapterNotes[selectedNoteIndex];
   const int padding = std::max(metrics.verticalSpacing, 8);
-  snprintf(lineBuffer, sizeof(lineBuffer), "%s %u  •  %s %u", tr(STR_BIBLE_NOTES), note.number,
-           tr(STR_BIBLE_VERSE), note.verse);
+  snprintf(lineBuffer, sizeof(lineBuffer), "%s %u  •  %s %u", tr(STR_BIBLE_NOTES), note.number, tr(STR_BIBLE_VERSE),
+           note.verse);
   renderer.drawText(UI_12_FONT_ID, x + padding, y + padding, lineBuffer);
   const int headerHeight = renderer.getLineHeight(UI_12_FONT_ID);
   renderer.drawLine(x + padding, y + padding + headerHeight, x + width - padding, y + padding + headerHeight);
@@ -1430,8 +1466,9 @@ void BibleActivity::renderReader() {
   if (currentPage < 0) currentPage = 0;
   if (currentPage >= totalPages) currentPage = totalPages - 1;
   const int lineHeight = renderer.getLineHeight(readerFontId);
-  GUI.drawHelpText(renderer, Rect{viewportLeft, viewportTop - renderer.getLineHeight(SMALL_FONT_ID), viewportWidth,
-                                  renderer.getLineHeight(SMALL_FONT_ID)},
+  GUI.drawHelpText(renderer,
+                   Rect{viewportLeft, viewportTop - renderer.getLineHeight(SMALL_FONT_ID), viewportWidth,
+                        renderer.getLineHeight(SMALL_FONT_ID)},
                    tr(STR_BIBLE_READER_HINT));
 
   auto drawPageLines = [this, lineHeight]() {
@@ -1454,8 +1491,8 @@ void BibleActivity::renderReader() {
 
   std::string title;
   if (SETTINGS.statusBarSpec().showsTitle()) {
-    const char* versionLabel = showingDailyApiText ? dailyVerse.translationAbbreviation
-                                                   : (currentVersion() ? currentVersion()->id : "");
+    const char* versionLabel =
+        showingDailyApiText ? dailyVerse.translationAbbreviation : (currentVersion() ? currentVersion()->id : "");
     snprintf(lineBuffer, sizeof(lineBuffer), "%s %s %u", versionLabel,
              currentBook() ? currentBook()->name : tr(STR_BIBLE), currentChapter());
     title = lineBuffer;
