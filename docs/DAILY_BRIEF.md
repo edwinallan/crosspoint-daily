@@ -201,6 +201,10 @@ After selecting a book:
 5. Allow returning to Bible home.
 6. Allow switching Bible versions.
 
+Save the most recently used Bible version and restore it the next time Bible
+opens. If that version is no longer available, fall back to an available
+version using the normal selection rules.
+
 Initial versions:
 
 - English: TPT

@@ -109,7 +109,9 @@ void BibleActivity::onEnter() {
         break;
       }
     }
-    selectDailyContext();
+    const int rememberedVersion = findVersionIndex(APP_STATE.bibleResumeVersion, nullptr);
+    if (rememberedVersion >= 0) versionIndex = rememberedVersion;
+    selectDailyContext(rememberedVersion < 0);
     if (resumeFromSleep) restoreSleepPosition();
   }
 
@@ -141,6 +143,11 @@ void BibleActivity::onBeforeSleep() {
 }
 
 void BibleActivity::onExit() {
+  if (const auto* version = currentVersion();
+      version && strcmp(APP_STATE.bibleResumeVersion, version->directory) != 0) {
+    snprintf(APP_STATE.bibleResumeVersion, sizeof(APP_STATE.bibleResumeVersion), "%s", version->directory);
+    APP_STATE.saveToFile();
+  }
   releaseChapter();
   versions.clear();
   books.clear();
@@ -611,7 +618,7 @@ int BibleActivity::findDailyBookIndex() const {
   return -1;
 }
 
-void BibleActivity::selectDailyContext() {
+void BibleActivity::selectDailyContext(const bool preferDailyVersion) {
   dailyTranslationCustom = false;
   dailySelectionAvailable = false;
   dailyJumpPending = false;
@@ -628,7 +635,7 @@ void BibleActivity::selectDailyContext() {
     // does not turn a custom translation into a local one.
     const int exact = findVersionIndex(dailyVerse.translationAbbreviation, nullptr);
     if (exact >= 0) {
-      selectedVersion = exact;
+      if (preferDailyVersion) selectedVersion = exact;
     } else {
       dailyTranslationCustom = true;
       if (endsWithIgnoreCase(dailyVerse.translationName, " Modified")) {
@@ -638,10 +645,11 @@ void BibleActivity::selectDailyContext() {
                           " Modified");
         copyWithoutSuffix(sourceName, sizeof(sourceName), dailyVerse.translationName, " Modified");
         const int source = findVersionIndex(sourceAbbreviation, sourceName);
-        if (source >= 0) selectedVersion = source;
+        if (preferDailyVersion && source >= 0) selectedVersion = source;
       }
-      if (selectedVersion < 0 || selectedVersion >= static_cast<int>(versions.size()) ||
-          !equalsIgnoreCase(versions[selectedVersion].language, dailyVerse.translationLanguage)) {
+      if (preferDailyVersion &&
+          (selectedVersion < 0 || selectedVersion >= static_cast<int>(versions.size()) ||
+           !equalsIgnoreCase(versions[selectedVersion].language, dailyVerse.translationLanguage))) {
         for (size_t i = 0; i < versions.size(); ++i) {
           if (equalsIgnoreCase(versions[i].language, dailyVerse.translationLanguage)) {
             selectedVersion = static_cast<int>(i);

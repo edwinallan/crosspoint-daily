@@ -107,7 +107,7 @@ class BibleActivity final : public Activity {
   int findBookIndex(const char* bookId) const;
   int findVersionIndex(const char* abbreviation, const char* name) const;
   int findDailyBookIndex() const;
-  void selectDailyContext();
+  void selectDailyContext(bool preferDailyVersion);
   void restoreSleepPosition();
   bool isDailyBookAndChapter() const;
   bool shouldUseDailyApiText() const;
