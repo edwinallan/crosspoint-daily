@@ -62,8 +62,6 @@ struct ChapterNote {
   uint32_t textOffset = 0;
 };
 
-enum class DailyVerseRefreshStatus : uint8_t { Idle, Running, Succeeded, Failed };
-
 class BibleLibrary final {
  public:
   static bool discoverVersions(std::vector<VersionInfo>& versions);
@@ -72,9 +70,7 @@ class BibleLibrary final {
   static bool loadAvailableChapters(const VersionInfo& version, const BookInfo& book,
                                     std::vector<uint16_t>& chapters);
   static bool loadDailyVerse(DailyVerse& verse);
-  static bool refreshDailyVerse(DailyVerse& verse);
-  static bool startDailyVerseRefresh();
-  static DailyVerseRefreshStatus dailyVerseRefreshStatus();
+  static bool refreshDailyVerse();
 
   // API excerpts are bounded by DailyVerse's fixed buffers. The returned
   // allocation is held for the reader view and released when that view exits.

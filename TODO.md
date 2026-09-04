@@ -1,2 +1,1 @@
-opening the bible app is super slow because of the wifi fetch. Here's the major changes i want you to do: instead of turning on wifi and fetching daily on opening the bible app, simply use the latest fetch. Then on the homescreen, instead of having the "Back" button read "Resume", make it a "Sync" button that fetches the daily api's including the bible. This means that updating my daily is a manual task. It must connect to first known avaiable network and fetch… show a loader.
-When i open the bible app it should remember what version i was in
+When i open the bible app it should remember what bible version i was in

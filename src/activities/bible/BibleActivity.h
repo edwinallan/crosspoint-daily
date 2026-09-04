@@ -59,7 +59,6 @@ class BibleActivity final : public Activity {
   bool dailySelectionAvailable = false;
   bool dailyJumpPending = false;
   bool showingDailyApiText = false;
-  bool dailyVerseRefreshPending = false;
   bool homeSelectionChanged = false;
   bool homeFullRenderPending = true;
   bool resumeFromSleep = false;
@@ -110,7 +109,6 @@ class BibleActivity final : public Activity {
   int findDailyBookIndex() const;
   void selectDailyContext();
   void restoreSleepPosition();
-  void applyDailyVerseRefresh();
   bool isDailyBookAndChapter() const;
   bool shouldUseDailyApiText() const;
   bool findVerseOffset(uint16_t verse, size_t& offset) const;

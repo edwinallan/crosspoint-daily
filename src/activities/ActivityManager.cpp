@@ -11,6 +11,7 @@
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
+#include "daily/DailySyncActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
@@ -194,6 +195,17 @@ void ActivityManager::goToBible(const bool resumeFromSleep) {
   auto activity = makeUniqueNoThrow<BibleActivity>(renderer, mappedInput, resumeFromSleep);
   if (!activity) {
     LOG_ERR("ACT", "OOM: BibleActivity");
+    return;
+  }
+  replaceActivity(std::move(activity));
+}
+
+void ActivityManager::goToDailySync() {
+  // The activity is heap-backed because it replaces Home and must outlive this
+  // call; fallible allocation avoids aborting when Wi-Fi has squeezed the heap.
+  auto activity = makeUniqueNoThrow<DailySyncActivity>(renderer, mappedInput);
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: DailySyncActivity (%u bytes)", static_cast<unsigned>(sizeof(DailySyncActivity)));
     return;
   }
   replaceActivity(std::move(activity));

@@ -4,11 +4,8 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -27,9 +24,6 @@ constexpr size_t MAX_NOTES_FILE_BYTES = 16 * 1024;
 constexpr size_t NOTES_LABEL_ALLOWANCE = 2048;
 constexpr size_t MAX_PATH_LENGTH = 160;
 constexpr char DAILY_CACHE_DIRECTORY[] = "/.crosspoint/daily";
-constexpr uint32_t DAILY_VERSE_REFRESH_TASK_STACK_BYTES = 4096;
-
-std::atomic<DailyVerseRefreshStatus> dailyVerseRefreshState{DailyVerseRefreshStatus::Idle};
 
 bool copyExact(char* destination, const size_t destinationSize, const char* source) {
   if (!destination || destinationSize == 0 || !source || source[0] == '\0') return false;
@@ -524,40 +518,9 @@ bool refreshDailyVerseCache(DailyVerse* output) {
   return true;
 }
 
-void dailyVerseRefreshTask(void*) {
-  const bool succeeded = refreshDailyVerseCache(nullptr);
-  LOG_DBG(LOG_TAG, "Daily verse refresh stack remaining: %u bytes",
-          static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
-  dailyVerseRefreshState.store(succeeded ? DailyVerseRefreshStatus::Succeeded : DailyVerseRefreshStatus::Failed,
-                               std::memory_order_release);
-  vTaskDelete(nullptr);
-}
-
 }  // namespace
 
-bool BibleLibrary::refreshDailyVerse(DailyVerse& verse) { return refreshDailyVerseCache(&verse); }
-
-bool BibleLibrary::startDailyVerseRefresh() {
-  DailyVerseRefreshStatus expected = dailyVerseRefreshState.load(std::memory_order_acquire);
-  while (expected != DailyVerseRefreshStatus::Running) {
-    if (dailyVerseRefreshState.compare_exchange_weak(expected, DailyVerseRefreshStatus::Running,
-                                                     std::memory_order_acq_rel, std::memory_order_acquire)) {
-      if (xTaskCreate(&dailyVerseRefreshTask, "DailyVerse", DAILY_VERSE_REFRESH_TASK_STACK_BYTES, nullptr,
-                      tskIDLE_PRIORITY, nullptr) == pdPASS) {
-        return true;
-      }
-      LOG_ERR(LOG_TAG, "Could not create Daily verse refresh task (%u byte stack)",
-              static_cast<unsigned>(DAILY_VERSE_REFRESH_TASK_STACK_BYTES));
-      dailyVerseRefreshState.store(DailyVerseRefreshStatus::Failed, std::memory_order_release);
-      return false;
-    }
-  }
-  return true;
-}
-
-DailyVerseRefreshStatus BibleLibrary::dailyVerseRefreshStatus() {
-  return dailyVerseRefreshState.load(std::memory_order_acquire);
-}
+bool BibleLibrary::refreshDailyVerse() { return refreshDailyVerseCache(nullptr); }
 
 bool BibleLibrary::loadDailyChapter(const DailyVerse& verse, const char* footnotesLabel,
                                     std::unique_ptr<char[]>& text, size_t& textLength, size_t& textCapacity) {

@@ -5,7 +5,6 @@
 #include <I18n.h>
 #include <I18nKeys.h>
 #include <Logging.h>
-#include <WiFi.h>
 
 #include <algorithm>
 #include <cctype>
@@ -114,12 +113,9 @@ void BibleActivity::onEnter() {
     if (resumeFromSleep) restoreSleepPosition();
   }
 
-  // Paint the cache-backed screen first. If another workflow has already
-  // connected Wi-Fi, refresh on a low-priority task so input remains responsive.
-  requestUpdateAndWait();
-  if (WiFi.status() == WL_CONNECTED) {
-    dailyVerseRefreshPending = bible::BibleLibrary::startDailyVerseRefresh();
-  }
+  // Bible opening is deliberately cache-only. Daily data is refreshed by the
+  // explicit Sync action on Home so entering the reader never waits on Wi-Fi.
+  requestUpdate();
 }
 
 void BibleActivity::onBeforeSleep() {
@@ -154,7 +150,6 @@ void BibleActivity::onExit() {
 }
 
 void BibleActivity::loop() {
-  applyDailyVerseRefresh();
   switch (view) {
     case View::Home:
       handleHomeInput();
@@ -166,48 +161,6 @@ void BibleActivity::loop() {
       handleReaderInput();
       break;
   }
-}
-
-void BibleActivity::applyDailyVerseRefresh() {
-  if (!dailyVerseRefreshPending) return;
-
-  switch (bible::BibleLibrary::dailyVerseRefreshStatus()) {
-    case bible::DailyVerseRefreshStatus::Idle:
-    case bible::DailyVerseRefreshStatus::Running:
-      return;
-    case bible::DailyVerseRefreshStatus::Failed:
-      dailyVerseRefreshPending = false;
-      return;
-    case bible::DailyVerseRefreshStatus::Succeeded:
-      dailyVerseRefreshPending = false;
-      break;
-  }
-
-  // A chapter already open must keep its source and page offsets stable. The
-  // newly cached verse is picked up next time Bible opens; only the visible
-  // cache-backed home screen is refreshed in-place.
-  if (view != View::Home) return;
-
-  {
-    RenderLock lock(*this);
-    homeFullRenderPending = true;
-    if (!bible::BibleLibrary::loadDailyVerse(dailyVerse)) return;
-    const int selectedVersionIndex = versionIndex;
-    char selectedBookId[sizeof(dailyBookId)]{};
-    if (homeSelectionChanged) {
-      const auto* selectedBook = currentBook();
-      if (selectedBook) snprintf(selectedBookId, sizeof(selectedBookId), "%s", selectedBook->id);
-    }
-    selectDailyContext();
-    if (homeSelectionChanged && selectedVersionIndex >= 0 &&
-        selectedVersionIndex < static_cast<int>(versions.size())) {
-      versionIndex = selectedVersionIndex;
-      bible::BibleLibrary::loadBooks(versions[versionIndex], books);
-      const int selectedBookIndex = findBookIndex(selectedBookId);
-      bookIndex = selectedBookIndex >= 0 ? selectedBookIndex : 0;
-    }
-  }
-  requestUpdate();
 }
 
 void BibleActivity::handleHomeInput() {

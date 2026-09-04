@@ -9,19 +9,17 @@ Add two focused features to standard CrossPoint:
 
 CrossPoint must remain fully usable as an e-reader.
 
-## Boot refresh
+## Manual refresh
 
-When the device starts:
+When the device starts or a Daily screen opens:
 
 1. Load the last cached verse, calendar, and focus JSON immediately.
-2. Display the normal homepage without waiting for the network.
-3. If Wi-Fi is configured, fetch updated data in a background task, first from
-   `/verse`, then `/calendar`, and then `/focus`.
-4. Validate and cache each response independently.
-5. Refresh any visible Daily screen when the fetch completes.
-6. Keep the previous cache when the request fails.
+2. Display the requested screen without enabling Wi-Fi or waiting for the network.
 
-This is a startup refresh, not continuous background synchronization.
+The user starts refresh manually with the **Sync** button on the homepage. Sync
+connects to the first available saved Wi-Fi network, shows a loading screen,
+then fetches `/verse`, `/calendar`, and `/focus`. Validate and cache each
+response independently, and keep the previous cache when a request fails.
 
 ## Server configuration
 
@@ -37,7 +35,6 @@ Add a **Daily** section to CrossPoint Settings containing:
 
 - Server URL
 - Bearer token
-- Refresh on startup toggle
 - Manual refresh action
 - Reload all Daily API endpoints action
 - Last successful refresh time
@@ -59,7 +56,7 @@ POST {baseUrl}/tasks/{taskId}
 Use Bearer authentication for every request to the exact
 `my-daily.allan.ch` host. Never forward that header across a redirect to a
 different host. The token is a local secret and must not be committed to the
-repository. The two GET requests
+repository. The three GET requests
 are independent: `/verse` returns only the current daily Bible verse as JSON,
 while `/calendar` returns the complete calendar and task JSON for the next
 five months, not only today's events, and `/focus` returns the timetable that
@@ -445,7 +442,7 @@ The normal sleep-screen renderer must not overwrite the Daily Visualizer after i
 7. Add Calendar unlocking.
 8. Add Daily settings.
 9. Add API loading and caching.
-10. Add startup refresh.
+10. Add manual homepage sync.
 11. Add calendar task updates and offline queueing.
 12. Add the Daily Visualizer power-off screen.
 13. Validate the complete feature in the simulator.
