@@ -30,7 +30,7 @@ void SleepActivity::onEnter() {
   }
 
   // Show popup with reader orientation only when going to sleep from reader
-  if (APP_STATE.lastSleepFromReader) {
+  if (APP_STATE.sleepResumeTarget == CrossPointState::SleepResumeTarget::Reader) {
     ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
     GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
     renderer.setOrientation(GfxRenderer::Orientation::Portrait);
@@ -46,7 +46,7 @@ void SleepActivity::onEnter() {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER):
       return renderCoverSleepScreen();
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
-      if (APP_STATE.lastSleepFromReader) {
+      if (APP_STATE.sleepResumeTarget == CrossPointState::SleepResumeTarget::Reader) {
         return renderCoverSleepScreen();
       } else {
         return renderCustomSleepScreen();

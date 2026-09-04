@@ -11,6 +11,9 @@ class CrossPointState : public PersistableStore<CrossPointState> {
   friend class PersistableStore<CrossPointState>;
 
  public:
+  enum class SleepResumeTarget : uint8_t { Home, Reader, Bible };
+  enum class BibleResumeView : uint8_t { Home, Chapters, Reader };
+
   static constexpr uint8_t SLEEP_RECENT_COUNT = 16;
 
   std::string openEpubPath;
@@ -18,8 +21,13 @@ class CrossPointState : public PersistableStore<CrossPointState> {
   uint8_t recentSleepPos = 0;                           // next write slot
   uint8_t recentSleepFill = 0;                          // valid entries (0..SLEEP_RECENT_COUNT)
   uint8_t readerActivityLoadCount = 0;
-  bool lastSleepFromReader = false;
+  SleepResumeTarget sleepResumeTarget = SleepResumeTarget::Home;
   bool showBootScreen = true;
+  BibleResumeView bibleResumeView = BibleResumeView::Home;
+  char bibleResumeVersion[32]{};
+  char bibleResumeBook[12]{};
+  uint16_t bibleResumeChapter = 0;
+  uint16_t bibleResumePage = 0;
 
   static const char* getFilePath() { return "/.crosspoint/state.json"; }
   void toJson(JsonDocument& doc) const;

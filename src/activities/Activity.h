@@ -44,6 +44,9 @@ class Activity {
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
+  virtual bool isBibleActivity() const { return false; }
+  // Persist activity-specific resume state before the shared app-state snapshot is written.
+  virtual void onBeforeSleep() {}
   // Returns true when the activity schedules its own forced refresh.
   virtual bool handleForcedRefresh() { return false; }
   virtual bool isHomeActivity() const { return false; }

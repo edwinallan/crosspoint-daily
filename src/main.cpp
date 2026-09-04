@@ -194,7 +194,12 @@ static bool loadSleepFrameBuffer() {
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
-  APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+  activityManager.prepareForSleep();
+  APP_STATE.sleepResumeTarget = activityManager.isBibleActivity()
+                                    ? CrossPointState::SleepResumeTarget::Bible
+                                : activityManager.isReaderActivity()
+                                    ? CrossPointState::SleepResumeTarget::Reader
+                                    : CrossPointState::SleepResumeTarget::Home;
 
   const bool isQuickResumeSleep =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
@@ -417,13 +422,19 @@ void setup() {
     activityManager.goToReader(APP_STATE.openEpubPath);
   } else if (resume == BootResume::Silent) {
     // target == home (or reader with no open book): land on home — don't fall
-    // through to the sleep-wake "resume reader" logic, which fires on stale
-    // openEpubPath + lastSleepFromReader from a prior session.
+    // through to the sleep-wake resume logic, which uses persisted state from
+    // the preceding deep sleep.
     activityManager.goHome();
-  } else if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
-             mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
-    // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
-    // crashed (indicated by readerActivityLoadCount > 0)
+  } else if (mappedInputManager.isPressed(MappedInputManager::Button::Back)) {
+    // Back held during wake is the common escape hatch from automatic resume.
+    activityManager.goHome();
+  } else if (APP_STATE.sleepResumeTarget == CrossPointState::SleepResumeTarget::Bible) {
+    activityManager.goToBible(true);
+  } else if (APP_STATE.openEpubPath.empty() ||
+             APP_STATE.sleepResumeTarget != CrossPointState::SleepResumeTarget::Reader ||
+             APP_STATE.readerActivityLoadCount > 0) {
+    // Boot to home if no book is open, sleep did not originate in the EPUB reader,
+    // or the reader previously crashed (indicated by readerActivityLoadCount > 0).
     activityManager.goHome();
   } else {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load

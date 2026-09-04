@@ -62,6 +62,7 @@ class BibleActivity final : public Activity {
   bool dailyVerseRefreshPending = false;
   bool homeSelectionChanged = false;
   bool homeFullRenderPending = true;
+  bool resumeFromSleep = false;
   int dailySourceVersionIndex = -1;
   int renderedHomeBookIndex = 0;
   char dailyBookId[12]{};
@@ -108,6 +109,7 @@ class BibleActivity final : public Activity {
   int findVersionIndex(const char* abbreviation, const char* name) const;
   int findDailyBookIndex() const;
   void selectDailyContext();
+  void restoreSleepPosition();
   void applyDailyVerseRefresh();
   bool isDailyBookAndChapter() const;
   bool shouldUseDailyApiText() const;
@@ -123,12 +125,14 @@ class BibleActivity final : public Activity {
   void drawWrappedNoteText(const Rect& bounds, const char* text);
 
  public:
-  explicit BibleActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("Bible", renderer, mappedInput) {}
+  explicit BibleActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool resumeFromSleep = false)
+      : Activity("Bible", renderer, mappedInput), resumeFromSleep(resumeFromSleep) {}
 
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool isReaderActivity() const override { return view == View::Reader; }
+  bool isBibleActivity() const override { return true; }
+  void onBeforeSleep() override;
 };

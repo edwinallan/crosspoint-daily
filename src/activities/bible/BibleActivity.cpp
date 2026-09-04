@@ -15,11 +15,12 @@
 #include <string>
 
 #include "CrossPointSettings.h"
+#include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
+#include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "activities/reader/ReaderUtils.h"
 #include "util/ButtonNavigator.h"
 
 namespace {
@@ -110,6 +111,7 @@ void BibleActivity::onEnter() {
       }
     }
     selectDailyContext();
+    if (resumeFromSleep) restoreSleepPosition();
   }
 
   // Paint the cache-backed screen first. If another workflow has already
@@ -118,6 +120,28 @@ void BibleActivity::onEnter() {
   if (WiFi.status() == WL_CONNECTED) {
     dailyVerseRefreshPending = bible::BibleLibrary::startDailyVerseRefresh();
   }
+}
+
+void BibleActivity::onBeforeSleep() {
+  switch (view) {
+    case View::Home:
+      APP_STATE.bibleResumeView = CrossPointState::BibleResumeView::Home;
+      break;
+    case View::Chapters:
+      APP_STATE.bibleResumeView = CrossPointState::BibleResumeView::Chapters;
+      break;
+    case View::Reader:
+      APP_STATE.bibleResumeView = CrossPointState::BibleResumeView::Reader;
+      break;
+  }
+
+  const auto* version = currentVersion();
+  const auto* book = currentBook();
+  snprintf(APP_STATE.bibleResumeVersion, sizeof(APP_STATE.bibleResumeVersion), "%s",
+           version ? version->directory : "");
+  snprintf(APP_STATE.bibleResumeBook, sizeof(APP_STATE.bibleResumeBook), "%s", book ? book->id : "");
+  APP_STATE.bibleResumeChapter = currentChapter();
+  APP_STATE.bibleResumePage = static_cast<uint16_t>(std::max(currentPage, 0));
 }
 
 void BibleActivity::onExit() {
@@ -708,6 +732,46 @@ void BibleActivity::selectDailyContext() {
   dailySourceVersionIndex = versionIndex;
   dailySelectionAvailable = true;
   dailyJumpPending = true;
+}
+
+void BibleActivity::restoreSleepPosition() {
+  const int savedVersion = findVersionIndex(APP_STATE.bibleResumeVersion, nullptr);
+  if (savedVersion >= 0) {
+    versionIndex = savedVersion;
+    if (!bible::BibleLibrary::loadBooks(versions[versionIndex], books)) return;
+  }
+
+  const int savedBook = findBookIndex(APP_STATE.bibleResumeBook);
+  if (savedBook >= 0) bookIndex = savedBook;
+
+  switch (APP_STATE.bibleResumeView) {
+    case CrossPointState::BibleResumeView::Home:
+      view = View::Home;
+      return;
+    case CrossPointState::BibleResumeView::Chapters:
+    case CrossPointState::BibleResumeView::Reader:
+      break;
+  }
+
+  chapters.clear();
+  const auto* version = currentVersion();
+  const auto* book = currentBook();
+  if (!version || !book || !bible::BibleLibrary::loadAvailableChapters(*version, *book, chapters)) {
+    view = View::Home;
+    return;
+  }
+  selectNearestChapter(APP_STATE.bibleResumeChapter == 0 ? 1 : APP_STATE.bibleResumeChapter);
+
+  if (APP_STATE.bibleResumeView == CrossPointState::BibleResumeView::Chapters) {
+    view = View::Chapters;
+    return;
+  }
+
+  view = View::Reader;
+  ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+  if (loadReaderChapterLocked() && totalPages > 0) {
+    currentPage = std::min(static_cast<int>(APP_STATE.bibleResumePage), totalPages - 1);
+  }
 }
 
 bool BibleActivity::isDailyBookAndChapter() const {
